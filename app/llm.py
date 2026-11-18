@@ -1,0 +1,344 @@
+"""Model backends: DeepSeek (cloud, OpenAI-compatible SSE) and Ollama (local NDJSON).
+
+Both stream generators yield (kind, value) tuples:
+  ("think", str) ("text", str) ("tool_calls", [..]) ("usage", {..}) ("error", str)
+"""
+import json
+import socket
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+from config import DEEPSEEK_URL, OLLAMA_URL
+
+
+def _post(url, body, headers=None, timeout=600):
+    req = urllib.request.Request(
+        url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json", **(headers or {})})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _get_json(url, timeout=5):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.load(r)
+
+
+def describe_error(e):
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:600]
+        except Exception:
+            body = ""
+        try:
+            msg = json.loads(body).get("error")
+            if isinstance(msg, dict):
+                msg = msg.get("message")
+            body = msg or body
+        except Exception:
+            pass
+        return f"HTTP {e.code}: {body}".strip()
+    if isinstance(e, urllib.error.URLError):
+        return f"ما قدرت أتصل: {e.reason}"
+    if isinstance(e, (socket.timeout, TimeoutError)):
+        return "انتهت مهلة الاتصال"
+    return f"{type(e).__name__}: {e}"
+
+
+def new_call_id():
+    return "call_" + uuid.uuid4().hex[:12]
+
+
+# ===================== Ollama: VRAM management =====================
+def norm_tag(name):
+    return name if ":" in name.split("/")[-1] else name + ":latest"
+
+
+def ollama_ok():
+    try:
+        _get_json(OLLAMA_URL + "/api/version", 3)
+        return True
+    except Exception:
+        return False
+
+
+def ollama_version():
+    try:
+        return _get_json(OLLAMA_URL + "/api/version", 3).get("version", "")
+    except Exception:
+        return ""
+
+
+def ollama_loaded():
+    try:
+        return [norm_tag(m["name"]) for m in _get_json(OLLAMA_URL + "/api/ps").get("models", [])]
+    except Exception:
+        return []
+
+
+def ollama_installed():
+    try:
+        return [norm_tag(m["name"]) for m in _get_json(OLLAMA_URL + "/api/tags").get("models", [])]
+    except Exception:
+        return []
+
+
+def ollama_load(model, num_ctx):
+    """Load a model into VRAM and keep it there until unloaded."""
+    try:
+        with _post(OLLAMA_URL + "/api/generate",
+                   {"model": model, "keep_alive": -1, "options": {"num_ctx": int(num_ctx)}},
+                   timeout=900) as r:
+            r.read()
+        return True, ""
+    except Exception as e:
+        return False, describe_error(e)
+
+
+def ollama_unload(model):
+    try:
+        with _post(OLLAMA_URL + "/api/generate", {"model": model, "keep_alive": 0}, timeout=60) as r:
+            r.read()
+    except Exception:
+        pass
+
+
+def ollama_caption(model, images_b64, num_ctx, question=None):
+    """Describe images with the local vision model (used to give DeepSeek 'eyes')."""
+    prompt = question or ("Describe this image in detail for someone who cannot see it: objects, people, "
+                          "text (transcribe it exactly), layout, colors, UI elements. Be factual.")
+    body = {"model": model, "stream": False, "think": False, "keep_alive": -1,
+            "options": {"num_ctx": int(num_ctx)},
+            "messages": [{"role": "user", "content": prompt, "images": images_b64}]}
+    try:
+        with _post(OLLAMA_URL + "/api/chat", body, timeout=600) as r:
+            return (json.load(r).get("message") or {}).get("content", "").strip()
+    except Exception as e:
+        return f"(ما قدرت أوصف الصورة: {describe_error(e)})"
+
+
+# ===================== message conversion =====================
+def to_deepseek(msgs, flatten=False):
+    """Internal messages -> DeepSeek chat format. Images must already be replaced by captions.
+
+    reasoning_content is passed back on every assistant message (DeepSeek returns 400 otherwise
+    when tools are in use). flatten=True turns tool traffic into plain text (fallback path).
+    """
+    out = []
+    for m in msgs:
+        r = m["role"]
+        if r == "assistant":
+            if flatten:
+                txt = m.get("content") or ""
+                for t in m.get("tool_calls") or []:
+                    txt += f"\n[استخدمت الأداة {t['name']} بـ {json.dumps(t['args'], ensure_ascii=False)[:800]}]"
+                out.append({"role": "assistant", "content": txt.strip() or "..."})
+                continue
+            a = {"role": "assistant", "content": m.get("content") or "",
+                 "reasoning_content": m.get("reasoning") or ""}
+            if m.get("tool_calls"):
+                a["tool_calls"] = [{"id": t["id"], "type": "function", "function": {
+                    "name": t["name"], "arguments": json.dumps(t["args"], ensure_ascii=False)}}
+                    for t in m["tool_calls"]]
+            out.append(a)
+        elif r == "tool":
+            if flatten:
+                out.append({"role": "user", "content": f"[نتيجة {m.get('name', 'الأداة')}]\n{m['content']}"})
+            else:
+                out.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["content"]})
+        else:
+            out.append({"role": r, "content": m.get("content") or ""})
+    if flatten:   # merge consecutive same-role messages (API requires alternation for some models)
+        merged = []
+        for m in out:
+            if merged and merged[-1]["role"] == m["role"] and m["role"] != "system":
+                merged[-1]["content"] += "\n\n" + m["content"]
+            else:
+                merged.append(dict(m))
+        out = merged
+    return out
+
+
+def to_ollama(msgs):
+    out = []
+    for m in msgs:
+        r = m["role"]
+        if r == "assistant":
+            a = {"role": "assistant", "content": m.get("content") or ""}
+            if m.get("tool_calls"):
+                a["tool_calls"] = [{"function": {"name": t["name"], "arguments": t["args"]}}
+                                   for t in m["tool_calls"]]
+            out.append(a)
+        elif r == "tool":
+            out.append({"role": "tool", "content": m["content"], "tool_name": m.get("name", "")})
+        else:
+            x = {"role": r, "content": m.get("content") or ""}
+            if m.get("images_b64"):
+                x["images"] = m["images_b64"]
+            out.append(x)
+    return out
+
+
+# ===================== streaming =====================
+def stream_deepseek(key, model, effort, msgs, tools, cancel):
+    """msgs are internal messages (captions already applied)."""
+    attempt, flatten = 0, False
+    while True:
+        attempt += 1
+        body = {"model": model, "messages": to_deepseek(msgs, flatten), "stream": True,
+                "stream_options": {"include_usage": True},
+                "thinking": {"type": "enabled"}, "reasoning_effort": effort}
+        if tools and not flatten:
+            body["tools"] = tools
+        try:
+            resp = _post(DEEPSEEK_URL + "/chat/completions", body,
+                         {"Authorization": "Bearer " + key, "Accept": "text/event-stream"}, timeout=300)
+            break
+        except urllib.error.HTTPError as e:
+            err = describe_error(e)
+            if e.code == 400 and not flatten and attempt <= 2:
+                flatten = True          # history shape rejected -> retry with plain-text history
+                continue
+            if e.code in (429, 500, 502, 503, 504) and attempt <= 3 and not cancel.is_set():
+                time.sleep(2 * attempt)
+                continue
+            if e.code == 401:
+                err = "مفتاح DeepSeek غلط أو منتهي. غيّره من الإعدادات."
+            elif e.code == 402:
+                err = "رصيد DeepSeek خلص. اشحن من platform.deepseek.com"
+            yield "error", "DeepSeek: " + err
+            return
+        except Exception as e:
+            if attempt <= 3 and not cancel.is_set():
+                time.sleep(2 * attempt)
+                continue
+            yield "error", "DeepSeek: " + describe_error(e)
+            return
+
+    calls = {}
+    try:
+        for raw in resp:
+            if cancel.is_set():
+                break
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except Exception:
+                continue
+            if obj.get("usage"):
+                yield "usage", obj["usage"]
+            if not obj.get("choices"):
+                continue
+            d = obj["choices"][0].get("delta") or {}
+            if d.get("reasoning_content"):
+                yield "think", d["reasoning_content"]
+            if d.get("content"):
+                yield "text", d["content"]
+            for tc in d.get("tool_calls") or []:
+                c = calls.setdefault(tc.get("index", 0), {"id": "", "name": "", "args": ""})
+                c["id"] = tc.get("id") or c["id"]
+                f = tc.get("function") or {}
+                c["name"] += f.get("name") or ""
+                c["args"] += f.get("arguments") or ""
+    except Exception as e:
+        yield "error", "DeepSeek: انقطع الاتصال (" + describe_error(e) + ")"
+        return
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    if calls and not cancel.is_set():
+        res = []
+        for i in sorted(calls):
+            c = calls[i]
+            try:
+                args = json.loads(c["args"] or "{}")
+                if not isinstance(args, dict):
+                    args = {"value": args}
+            except Exception:
+                args = {"_raw": c["args"]}
+            res.append({"id": c["id"] or new_call_id(), "name": c["name"].strip(), "args": args})
+        yield "tool_calls", res
+
+
+def stream_ollama(model, msgs, tools, cancel, think, num_ctx):
+    body = {"model": model, "messages": to_ollama(msgs), "stream": True, "think": bool(think),
+            "keep_alive": -1, "options": {"num_ctx": int(num_ctx)}}
+    if tools:
+        body["tools"] = tools
+    resp = None
+    for attempt in range(2):
+        try:
+            resp = _post(OLLAMA_URL + "/api/chat", body, timeout=900)
+            break
+        except urllib.error.HTTPError as e:
+            err = describe_error(e)
+            if "think" in err.lower() and "think" in body and attempt == 0:
+                body.pop("think")              # model has no thinking support
+                continue
+            yield "error", "Ollama: " + err
+            return
+        except Exception as e:
+            yield "error", "Ollama: " + describe_error(e) + " — تأكد إن Ollama شغال."
+            return
+    calls = []
+    try:
+        for raw in resp:
+            if cancel.is_set():
+                break
+            try:
+                ch = json.loads(raw)
+            except Exception:
+                continue
+            if ch.get("error"):
+                yield "error", "Ollama: " + str(ch["error"])
+                return
+            m = ch.get("message") or {}
+            if m.get("thinking"):
+                yield "think", m["thinking"]
+            if m.get("content"):
+                yield "text", m["content"]
+            for tc in m.get("tool_calls") or []:
+                f = tc.get("function") or {}
+                args = f.get("arguments") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {"_raw": args}
+                calls.append({"id": new_call_id(), "name": (f.get("name") or "").strip(), "args": args})
+            if ch.get("done"):
+                yield "usage", {"prompt_tokens": ch.get("prompt_eval_count", 0),
+                                "completion_tokens": ch.get("eval_count", 0)}
+                break
+    except Exception as e:
+        yield "error", "Ollama: انقطع البث (" + describe_error(e) + ")"
+        return
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    if calls and not cancel.is_set():
+        yield "tool_calls", calls
+
+
+def deepseek_check(key):
+    """Validate a key quickly (used by the settings screen)."""
+    try:
+        req = urllib.request.Request(DEEPSEEK_URL + "/user/balance",
+                                     headers={"Authorization": "Bearer " + key})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.load(r)
+        infos = data.get("balance_infos") or []
+        bal = ", ".join(f"{b.get('total_balance')} {b.get('currency')}" for b in infos)
+        return True, bal or "شغال"
+    except Exception as e:
+        return False, describe_error(e)
