@@ -97,12 +97,13 @@ def extend_video(args, src, out_dir, cancel, progress):
         if seen:
             desc = seen                   # what is really in the video beats a guess written by the chat model
         scene = (f" The scene: {desc.rstrip('.')}." if desc else "")
-        base_prompt = ("Outpainting. Image 1 is a picture placed in the middle of a wider canvas; the area around it is "
-                       "only a blurred placeholder. Repaint ONLY that blurred border as a seamless, natural continuation "
-                       "of the scene, as if the camera had pulled back: continue every wall, floor, light, object and "
-                       "background pattern across the edge with the same art style, line work, colours and lighting."
-                       + scene + " Keep the middle picture exactly as it is. No blur, no black bars, no frame, "
-                       "no vignette, no extra glow or bloom, no text, no new characters.")
+        base_prompt = ("Outpaint image 1: it is ONE single continuous frame of a scene. The soft, smeared area around "
+                       "the sharp centre is unfinished: paint it as more of the very same place, as if the camera had "
+                       "pulled back. Continue every shape, wall, light, line and pattern that touches the edge of the "
+                       "sharp area outward so there is no visible border, frame, seam or picture-in-picture."
+                       + scene + " Same art style, line work, colours, darkness and lighting as the centre. Do not change "
+                       "the sharp centre. No blur, no black bars, no vignette, no extra glow or bloom, no text, "
+                       "no new characters, no sky or landscape unless the centre already shows one.")
         keys = []
         for i, t in enumerate(times):
             if cancel is not None and cancel.is_set():
@@ -110,9 +111,14 @@ def extend_video(args, src, out_dir, cancel, progress):
             frame, padded = work / f"f{i}.png", work / f"p{i}.png"
             _ff(["-ss", f"{t:.3f}", "-i", str(src), "-frames:v", "1", str(frame)], 0, progress,
                 f"يطلّع الفريم {i + 1}/{len(times)}")
+            px, py = cx, cy
+            mode = "mirror" if px < cw and py < ch else "smear"
             _ff(["-i", str(frame), "-filter_complex",
-                 f"[0]scale={gw}:{gh},boxblur=30:4[bg];[0]scale={cw}:{ch}:flags=lanczos[fg];"
-                 f"[bg][fg]overlay={cx}:{cy}", "-frames:v", "1", str(padded)], 0, progress, "يجهّز الإطار")
+                 f"[0]scale={cw}:{ch}:flags=lanczos,split=2[c][m];"
+                 f"[m]pad={cw + 2 * px}:{ch + 2 * py}:{px}:{py},"
+                 f"fillborders=left={px}:right={px}:top={py}:bottom={py}:mode={mode},"
+                 f"scale={gw}:{gh},gblur=sigma=22[bg];"
+                 f"[bg][c]overlay={cx}:{cy}", "-frames:v", "1", str(padded)], 0, progress, "يجهّز الإطار")
             spec = {"prompt": base_prompt, "width": gw, "height": gh, "count": 1, "images": [str(padded)]}
             if keys:
                 spec["images"].append(str(keys[0]))
