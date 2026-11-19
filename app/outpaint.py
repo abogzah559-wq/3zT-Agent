@@ -195,7 +195,7 @@ def extend_video(args, src, out_dir, cancel, progress):
             inner = (cx / gw + 0.1 * cw / gw, cy / gh + 0.1 * ch / gh, 0.8 * cw / gw, 0.8 * ch / gh)
             clut = _clut(_hist(made[0], inner), _hist(frame, (0.1, 0.1, 0.8, 0.8)), work / f"clut{i}.ppm")
             if clut:
-                _ff(["-i", str(made[0]), "-i", str(clut), "-filter_complex", f"[0][1]haldclut,scale={gw}:{gh}",
+                _ff(["-i", str(made[0]), "-f", "ppm_pipe", "-i", str(clut), "-filter_complex", f"[0][1]haldclut,scale={gw}:{gh}",
                      "-frames:v", "1", str(key)], 0, progress, "يطابق الألوان")
             else:
                 _ff(["-i", str(made[0]), "-vf", f"scale={gw}:{gh}", "-frames:v", "1", str(key)], 0, progress,
@@ -245,7 +245,7 @@ def extend_video(args, src, out_dir, cancel, progress):
                  f"[2:v]scale={ow}:{oh},format=gray[m];[fg0][m]alphamerge[fg];"
                  f"[bg][fg]overlay={ox}:{oy}:shortest=1,format=yuv420p[v]")
         audio = ["-map", "1:a?", "-c:a", "aac", "-b:a", "192k"]
-        extra = ["-i", str(vclut)] if vclut else []
+        extra = ["-f", "ppm_pipe", "-i", str(vclut)] if vclut else []   # forced: ffmpeg may guess another format
         code, log = videotools._encode(["-i", str(gen), "-i", str(src), "-loop", "1", "-i", str(mask), *extra,
                                         "-filter_complex", graph, "-map", "[v]", *audio, "-t", f"{dur:.3f}"],
                                        out, dur, progress, "يدمج الأصل مع الأطراف", crf=16)
