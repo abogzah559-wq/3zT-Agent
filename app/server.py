@@ -47,6 +47,22 @@ if freevideo.installed() and str(freevideo.CFG["home"]) != S["freevideo_home"]:
     save_settings(S)
 
 SEEN = {"last": 0.0, "bye": 0.0}
+
+
+def _code_stamp():
+    """Newest modification time of the app's own code: lets a fresh start replace an outdated server."""
+    newest = 0.0
+    for pat in ("*.py", "ui/*", "skills/*/SKILL.md"):
+        for f in APP_DIR.glob(pat):
+            try:
+                newest = max(newest, f.stat().st_mtime)
+            except OSError:
+                pass
+    return round(newest, 3)
+
+
+APP_DIR = Path(__file__).resolve().parent
+CODE_STAMP = _code_stamp()
 WINDOW = {"proc": None, "started": 0.0, "closed_at": 0.0}
 IDLE_LIMIT = 200        # seconds without any request from the window = closed (minimized windows poll slowly)
 BYE_GRACE = 6           # after a close beacon: wait, so a refresh (F5) doesn't shut the app down
@@ -547,7 +563,18 @@ class H(BaseHTTPRequestHandler):
                 threading.Thread(target=_start, daemon=True).start()
                 return self._json({"ok": True})
             if path == "/api/window":
+                if b.get("stamp") is not None and b.get("stamp") != CODE_STAMP:
+                    return self._json({"ok": True, "stale": True, "pid": os.getpid()})   # newer code: let it take over
                 open_window()
+                return self._json({"ok": True, "pid": os.getpid()})
+            if path == "/api/restart":
+                # reload the code: a new server takes the port and the open window reconnects to it
+                if agent.active_run():
+                    return self._json({"ok": False, "error": "فيه مهمة شغالة. وقفها أول."})
+                args = [sys.executable, str(APP_DIR / "server.py"), "--attach"]
+                subprocess.Popen(args, cwd=str(APP_DIR), creationflags=NO_WINDOW | 0x00000008 if IS_WIN else 0,
+                                 close_fds=True)
+                threading.Timer(0.4, lambda: os._exit(0)).start()
                 return self._json({"ok": True})
             return self._send(404, b"not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
@@ -709,18 +736,43 @@ class Server(ThreadingHTTPServer):
 
 
 def _ping_existing():
+    """Ask a running server to show its window. Returns True when it did, False when nothing answers,
+    and "stale" when it runs older code (or an older version without this check) and was stopped."""
     import urllib.request
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/window", data=b"{}", method="POST",
+        body = json.dumps({"stamp": CODE_STAMP}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/window", data=body, method="POST",
                                      headers={"X-3zT": "1", "Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=3).read()
-        return True
+        ans = json.loads(urllib.request.urlopen(req, timeout=3).read() or b"{}")
     except Exception:
         return False
+    if ans.get("pid") and not ans.get("stale"):
+        return True
+    pid = ans.get("pid") or _port_owner()
+    if pid and IS_WIN and int(pid) != os.getpid():
+        LOG.info("replacing outdated server pid %s", pid)
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=NO_WINDOW)
+    return "stale"
+
+
+def _port_owner():
+    if not IS_WIN:
+        return None
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=15,
+                             creationflags=NO_WINDOW).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[1].endswith(f":{PORT}") and parts[3].upper() == "LISTENING":
+                return int(parts[4])
+    except Exception:
+        pass
+    return None
 
 
 def main():
     no_window = "--no-window" in sys.argv
+    attach = "--attach" in sys.argv            # restarted in place: the window is already open
     pc.init_dpi()
     LOG.info("start v%s", VERSION)
     srv = None
@@ -729,7 +781,7 @@ def main():
             srv = Server(("127.0.0.1", PORT), H)
             break
         except OSError:
-            if _ping_existing():        # already running: just ask it to show a window
+            if not attach and _ping_existing() is True:   # already running the same code: show its window
                 return
             time.sleep(0.5)
     if srv is None:
@@ -740,7 +792,10 @@ def main():
     except Exception:
         pass
     threading.Thread(target=agent.warmup, daemon=True).start()
-    if not no_window:
+    if attach:
+        SEEN["last"] = time.time()
+        threading.Thread(target=watchdog, daemon=True).start()
+    elif not no_window:
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Timer(0.3, open_window).start()
     print(f"3zT Agent v{VERSION} on http://127.0.0.1:{PORT}", flush=True)
