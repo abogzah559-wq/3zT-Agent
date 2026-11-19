@@ -42,6 +42,9 @@ LOG.addHandler(_h)
 S = load_settings()
 agent.S = S
 freevideo.configure(S["freevideo_home"], S["freevideo_url"])
+if freevideo.installed() and str(freevideo.CFG["home"]) != S["freevideo_home"]:
+    S["freevideo_home"] = str(freevideo.CFG["home"])    # remember where the launcher put the engine
+    save_settings(S)
 
 SEEN = {"last": 0.0, "bye": 0.0}
 WINDOW = {"proc": None, "started": 0.0, "closed_at": 0.0}

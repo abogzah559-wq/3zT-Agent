@@ -35,14 +35,51 @@ class FVError(RuntimeError):
     pass
 
 
+def _has_token(folder):
+    try:
+        return (Path(folder) / "agent" / "token").is_file()
+    except OSError:
+        return False
+
+
+def find_home():
+    """FreeVideo keeps its engine wherever the user chose in the launcher (often Downloads/FreeVideo-engine).
+    Look in the usual places, then one level inside the user's main folders and the drive roots."""
+    home = Path.home()
+    local = Path(os.environ.get("LOCALAPPDATA", str(home)))
+    names = ("FreeVideo-engine", "FreeVideo", "freevideo-engine")
+    bases = [home / "Downloads", home / "Desktop", home / "Documents", home, local]
+    bases += [Path(f"{d}:\\") for d in "CDEFG"] if IS_WIN else []
+    for b in bases:
+        for n in names:
+            if _has_token(b / n):
+                return b / n
+    for b in bases:
+        try:
+            for c in b.iterdir():
+                if c.is_dir() and (c / "machine.json").is_file() and _has_token(c):
+                    return c
+        except OSError:
+            continue
+    return None
+
+
 def configure(home=None, url=None):
     if home:
         CFG["home"] = Path(os.path.expandvars(os.path.expanduser(str(home).strip())))
+    if not _has_token(CFG["home"]):
+        found = find_home()
+        if found:
+            CFG["home"] = found
     if url is not None:
         CFG["url"] = str(url or "").strip().rstrip("/")
 
 
 def _agent_dir():
+    if not _has_token(CFG["home"]):       # installed after the app started: look again
+        found = find_home()
+        if found:
+            CFG["home"] = found
     return CFG["home"] / "agent"
 
 
