@@ -165,6 +165,36 @@ def health():
             "problem": (s or {}).get("problem"), "home": str(CFG["home"]), "url": base_url()}
 
 
+_UIA = r"""
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$name = [System.Windows.Automation.AutomationElement]::NameProperty
+$win = $A::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,
+  (New-Object System.Windows.Automation.PropertyCondition($name, 'FreeVideo')))
+if (-not $win) { 'nowindow'; exit }
+foreach ($n in @('Later', 'Launch FreeVideo', 'Open FreeVideo')) {
+  $b = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+    (New-Object System.Windows.Automation.PropertyCondition($name, $n)))
+  if ($b -and $b.Current.IsEnabled) {
+    try { $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); "clicked:$n"; exit } catch {}
+  }
+}
+'none'
+"""
+
+
+def _press_launch():
+    """The launcher only starts ComfyUI after its Launch button is pressed: press it through UI Automation."""
+    if not IS_WIN:
+        return ""
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", _UIA],
+                           capture_output=True, text=True, timeout=25, creationflags=NO_WINDOW)
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
 def ensure_running(progress, cancel, timeout=900):
     """Start FreeVideo through its launcher when needed and wait until its API answers ready."""
     s = status()
@@ -181,7 +211,7 @@ def ensure_running(progress, cancel, timeout=900):
     if proc is None or proc.poll() is not None:
         progress("أشغّل FreeVideo...")
         STARTED["proc"] = subprocess.Popen([str(exe)], cwd=str(exe.parent), creationflags=NO_WINDOW if IS_WIN else 0)
-    t0, hinted = time.time(), False
+    t0, hinted, pressed, tries = time.time(), False, False, 0
     while time.time() - t0 < timeout:
         if cancel is not None and cancel.is_set():
             raise FVError("انلغى.")
@@ -189,6 +219,12 @@ def ensure_running(progress, cancel, timeout=900):
         if s and s.get("ready"):
             return s
         waited = int(time.time() - t0)
+        if not pressed and waited >= 6 and tries < 12:
+            tries += 1
+            res = _press_launch()
+            if res.startswith("clicked:Launch") or res.startswith("clicked:Open"):
+                pressed = True
+                progress("ضغطت تشغيل في FreeVideo — ينتظر ComfyUI يقوم")
         if waited > 45 and not hinted:
             hinted = True
             progress("FreeVideo لسا يفتح... إذا ظهرت نافذته اضغط Launch / تشغيل")

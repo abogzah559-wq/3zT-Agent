@@ -41,6 +41,26 @@ def _layout(src_w, src_h, can_w, can_h, zoom):
     return w, h, (can_w - w) // 2 // 2 * 2, (can_h - h) // 2 // 2 * 2
 
 
+def describe(frame, progress, cancel):
+    """One English sentence about the scene, from FreeVideo's own vision model (None if it is not available)."""
+    try:
+        file = freevideo.upload(frame)
+        spec = {"kind": "vlm", "max_tokens": 160, "label": "3zT extend",
+                "questions": [{"text": "Describe this frame for an artist who must extend it outward: art style, setting, "
+                                       "background, colours and lighting, in 2 short English sentences. No guessing "
+                                       "beyond what is visible.", "images": [{"file": file}]}]}
+        res = freevideo._check(freevideo.wait(freevideo.submit(spec)["id"], progress, cancel, "يتأمل الفيديو"), "الوصف")
+        ans = (res.get("answers") or [""])[0]
+        if isinstance(ans, dict):
+            ans = ans.get("text") or ans.get("answer") or ""
+        ans = " ".join(str(ans).split())[:600]
+        return ans or None
+    except freevideo.FVError as e:
+        if "انلغى" in str(e):
+            raise
+        return None
+
+
 def extend_video(args, src, out_dir, cancel, progress):
     src = Path(src)
     info = videotools._info(src)
@@ -70,7 +90,13 @@ def extend_video(args, src, out_dir, cancel, progress):
         last_t = max(0.0, dur - 1.0 / max(info["fps"], 1))
         times = [0.0, dur * 0.25, dur * 0.5, dur * 0.75, last_t] if dur >= 3 else [0.0, last_t]
         cw, ch, cx, cy = _layout(info["w"], info["h"], gw, gh, zoom)
-        scene = (f" The scene: {desc}." if desc else "")
+        first = work / "look.png"
+        _ff(["-ss", f"{dur / 2:.3f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=1280:-2", str(first)], 0,
+            progress, "يطلّع فريم للوصف")
+        seen = describe(first, progress, cancel)
+        if seen:
+            desc = seen                   # what is really in the video beats a guess written by the chat model
+        scene = (f" The scene: {desc.rstrip('.')}." if desc else "")
         base_prompt = ("Outpainting. Image 1 is a picture placed in the middle of a wider canvas; the area around it is "
                        "only a blurred placeholder. Repaint ONLY that blurred border as a seamless, natural continuation "
                        "of the scene, as if the camera had pulled back: continue every wall, floor, light, object and "

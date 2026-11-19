@@ -277,7 +277,7 @@ TOOLS = {
                         "surroundings around the original as if the camera pulled back, and the original stays untouched "
                         "in the middle. Use this for: extend / complete the sides, make it 21:9 or wider, zoom out, fill "
                         "black bars with real content. (upscale and resize do NOT add new picture content.) Up to 60 s; "
-                        "takes several minutes. Look at a frame first and write a short English description of the scene.",
+                        "takes several minutes. The tool looks at the video itself; description is optional.",
                         {"path": S, "aspect": {"type": "string", "enum": ["21:9", "16:9", "9:16", "1:1", "4:3", "3:4"]},
                          "zoom": N, "description": S,
                          "quality": {"type": "string", "enum": ["light", "medium", "high", "max"]}}, ["path"]),
