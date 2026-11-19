@@ -17,6 +17,11 @@ $cands = @((Get-Setting "comfy_dir" ""), (Join-Path $env:USERPROFILE "ComfyUI"),
 $markers = "3zT-2-start.bat", "_3zt_fast_download.py", "3zt_comfy_log.txt", "3zT-1-download-models.bat", "3zT-video-outpaint.json"
 $oldModels = "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors", "animagine-xl-4.0-opt.safetensors", "wan2.1_vace_1.3B_fp16.safetensors"
 
+# leftover v1.1 files inside this app folder
+$stale = @("install-media.bat", "scripts\install_media.ps1", "app\comfy.py") | ForEach-Object { Join-Path $Root $_ } |
+  Where-Object { Test-Path -LiteralPath $_ }
+foreach ($f in $stale) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+
 $targets = @()
 foreach ($c in $cands) {
   if (-not (Test-Path -LiteralPath $c)) { continue }
