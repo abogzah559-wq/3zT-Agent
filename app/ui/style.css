@@ -312,3 +312,22 @@ textarea.inp{min-height:240px;line-height:1.7;resize:vertical}
   .card .cb{grid-template-columns:1fr}
   .tabs{flex-direction:row;overflow-x:auto;border-left:0;border-bottom:1px solid var(--line)}
 }
+
+/* v1.1 */
+.livebar .l{flex-wrap:wrap}
+.livebar .ph{flex:1;min-width:0}
+.livebar .tm{font-size:12px;color:var(--mute);direction:ltr;font-variant-numeric:tabular-nums}
+.btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
+.gallery .filecard{display:flex;align-items:center;gap:10px;padding:9px 11px;background:var(--panel);min-width:260px;max-width:420px}
+.filecard .fic{width:42px;height:42px;border-radius:9px;background:var(--panel3);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text2);flex:none}
+.filecard .fic b{font-size:9px;margin-top:1px;color:var(--mute)}
+.filecard .fmeta{flex:1;min-width:0;display:flex;flex-direction:column}
+.filecard .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.filecard .fs{font-size:11.5px;color:var(--mute)}
+.filecard .fbtns{display:flex;gap:5px}
+.skills{display:flex;flex-direction:column;gap:6px}
+.sk{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:11px}
+.sk .t{flex:1;min-width:0}
+.sk .t b{display:block;font-size:13.5px;direction:ltr;text-align:right}
+.sk .t span{display:block;font-size:12px;color:var(--mute);line-height:1.6;max-height:3.2em;overflow:hidden;direction:ltr;text-align:left}
+.sk .tag{font-size:10.5px;color:var(--mute);border:1px solid var(--line2);border-radius:20px;padding:1px 7px;white-space:nowrap}

@@ -1,6 +1,6 @@
 "use strict";
 /* 3zT Agent UI — no frameworks, no build step. */
-const UI_VERSION = "1.0.0";
+const UI_VERSION = "1.1.0";
 
 // ================= icons =================
 const ICONS = {
@@ -255,9 +255,11 @@ function renderAI(t, isLive) {
   // steps
   const steps = [];
   msgs.forEach((m, i) => {
-    if (m.role !== "assistant" || !(m.tool_calls || []).length) return;
+    if (m.role !== "assistant") return;
+    const hasCalls = (m.tool_calls || []).length > 0;
+    if (!hasCalls && i > lastToolPos) return;               // final answer, shown below
     if (m.content && m.content.trim()) steps.push({note: m.content});
-    m.tool_calls.forEach(c => steps.push({call: c, res: results[c.id]}));
+    if (hasCalls) m.tool_calls.forEach(c => steps.push({call: c, res: results[c.id]}));
   });
   if (steps.length) {
     const calls = steps.filter(s => s.call);
@@ -296,12 +298,17 @@ function renderAI(t, isLive) {
   if (isLive && live) {
     for (const ap of Object.values(live.approvals)) d.appendChild(renderApproval(ap));
   }
-  // progress (live)
-  if (isLive && live && live.progress) {
-    const [txt, pct] = live.progress.split("|");
-    const p = document.createElement("div"); p.className = "prog";
-    p.innerHTML = `<div class="l"><i class="spin"></i>${esc(txt)}</div>` + (pct !== undefined ? `<div class="bar"><i style="width:${+pct}%"></i></div>` : `<div class="bar ind"><i></i></div>`);
+  // live status: always visible while working, with timers
+  if (isLive && live && !live.done) {
+    const p = document.createElement("div"); p.className = "prog livebar";
+    let bar = "";
+    if (live.progress) {
+      const [, pct] = live.progress.split("|");
+      bar = pct !== undefined ? `<div class="bar"><i style="width:${+pct}%"></i></div>` : `<div class="bar ind"><i></i></div>`;
+    }
+    p.innerHTML = `<div class="l"><i class="spin"></i><span class="ph"></span><span class="tm"></span></div>${bar}`;
     d.appendChild(p);
+    setTimeout(tickLive, 0);
   }
   // media
   const medias = [];
@@ -318,8 +325,6 @@ function renderAI(t, isLive) {
     const b = document.createElement("div"); b.className = "md" + (isLive && live && !live.done ? " cursor" : "");
     b.innerHTML = md(finalText, isLive);
     d.appendChild(b);
-  } else if (isLive && live && !live.done && !steps.length && !thinking && !live.progress) {
-    d.insertAdjacentHTML("beforeend", `<div class="note" style="display:flex;gap:9px;align-items:center;color:var(--mute)"><i class="spin"></i>يشتغل…</div>`);
   }
   // notices
   msgs.filter(m => m.role === "notice").forEach(n => {
@@ -344,18 +349,46 @@ function iconBtn(ic, title, fn) { const b = document.createElement("button"); b.
 function mediaEl(x) {
   if (mediaCache.has(x.url)) return mediaCache.get(x.url);
   const it = document.createElement("div"); it.className = "it";
+  if (x.kind === "file") {
+    it.className = "it filecard";
+    const ext = (x.name || x.path).split(".").pop().toUpperCase().slice(0, 5);
+    it.innerHTML = `<div class="fic">${icon("file")}<b>${esc(ext)}</b></div><div class="fmeta"><span class="fn" title="${esc(x.path)}">${esc(x.name || x.path)}</span><span class="fs">${x.size ? fmtSize(x.size) : ""}</span></div>`;
+    const row = document.createElement("div"); row.className = "fbtns";
+    row.appendChild(textBtn("ext", "افتح", () => openPath(x.path)));
+    row.appendChild(textBtn("folder", "مكانه", () => openPath(x.path, true)));
+    it.appendChild(row); mediaCache.set(x.url, it); return it;
+  }
   let el;
   if (x.kind === "video") { el = document.createElement("video"); el.controls = true; el.preload = "metadata"; el.src = x.url; }
   else if (x.kind === "audio") { el = document.createElement("audio"); el.controls = true; el.src = x.url; it.style.background = "var(--panel)"; }
   else { el = document.createElement("img"); el.src = x.url; el.loading = "lazy"; el.dataset.zoom = x.url; }
   it.appendChild(el);
   const acts = document.createElement("div"); acts.className = "acts";
-  acts.appendChild(iconBtn("folder", "افتح مكانه", () => api("/api/open_folder", {which: "workspace"}).catch(() => {})));
+  acts.appendChild(iconBtn("ext", "افتح", () => openPath(x.path)));
+  acts.appendChild(iconBtn("folder", "افتح مكانه", () => openPath(x.path, true)));
   acts.appendChild(iconBtn("copy", "انسخ المسار", () => copyText(x.path)));
   it.appendChild(acts);
   mediaCache.set(x.url, it);
   return it;
 }
+
+function textBtn(ic, label, fn) { const b = document.createElement("button"); b.className = "btn soft sm"; b.innerHTML = icon(ic, "sm") + label; b.onclick = fn; return b; }
+async function openPath(path, reveal = false) { try { await api("/api/open_path", {path, reveal}); } catch (e) { toast(e.message, true); } }
+function fmtDur(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+function tickLive() {
+  if (!live || live.done) return;
+  const el = document.querySelector(".livebar"); if (!el) return;
+  const now = Date.now();
+  let ph = live.phase || "يشتغل";
+  if (live.offline) ph = "انقطع الاتصال بالسيرفر… أحاول أرجع";
+  else if (Object.keys(live.approvals).length) ph = "ينتظر موافقتك 👇";
+  else if (live.progress) ph = live.progress.split("|")[0];
+  else if (now - live.lastEvent > 25000 && /يقرأ|يفكر/.test(ph)) ph += " (النماذج المحلية تاخذ وقت مع المحادثات الطويلة، لسا شغال)";
+  el.querySelector(".ph").textContent = ph;
+  el.querySelector(".tm").textContent = `${fmtDur(now - live.phaseAt)} · الكل ${fmtDur(now - live.startAt)}`;
+  $("#hint").textContent = "شغال · " + fmtDur(now - live.startAt);
+}
+setInterval(tickLive, 1000);
 
 function renderApproval(ap) {
   const d = document.createElement("div"); d.className = "appr";
@@ -453,12 +486,14 @@ function applyEvent(ev) {
     case "approval": live.approvals[ev.id] = ev; notifyAttention(); break;
     case "approval_done": delete live.approvals[ev.id]; break;
     case "progress": live.progress = ev.text; break;
+    case "phase": live.phase = ev.text; live.phaseAt = Date.now(); if (/^ينفّذ|^يكمّل/.test(ev.text)) live.progress = ""; break;
     case "usage": if (cur && cur.id === live.conv) cur.usage = ev.total; break;
     case "done": live.done = true; live.progress = ""; live.approvals = {}; break;
   }
 }
 async function connect(runId, convId, from = 0) {
-  const me = {run: runId, conv: convId, from, approvals: {}, running: {}, progress: "", done: false};
+  const me = {run: runId, conv: convId, from, approvals: {}, running: {}, progress: "", done: false,
+    phase: "يبدأ", startAt: Date.now(), phaseAt: Date.now(), lastEvent: Date.now(), offline: false};
   live = me;
   updateSend(); renderThread(); renderConvs();
   while (live === me && !me.done) {
@@ -479,11 +514,12 @@ async function connect(runId, convId, from = 0) {
           let ev; try { ev = JSON.parse(chunk.slice(5)); } catch (e) { continue; }
           if (ev.seq !== me.from) continue;   // already applied
           me.from = ev.seq + 1;
+          me.lastEvent = Date.now(); me.offline = false;
           applyEvent(ev);
         }
         if (cur && cur.id === me.conv) scheduleRender();
       }
-    } catch (e) { await new Promise(r => setTimeout(r, 1000)); }
+    } catch (e) { me.offline = true; tickLive(); await new Promise(r => setTimeout(r, 1000)); }
   }
   if (live !== me) return;        // replaced by a fresh connection
   // sync with the saved conversation
@@ -545,8 +581,10 @@ function openMenu(e, id) {
   add("pin", c && c.pinned ? "إلغاء التثبيت" : "تثبيت", async () => { await api("/api/conv/pin", {id}); loadConvs(); });
   add("edit", "إعادة تسمية", () => renameConv(id));
   add("trash", "حذف", async () => {
-    if (!confirm("تحذف المحادثة؟")) return;
-    try { await api("/api/conv/delete", {id}); if (cur && cur.id === id) newChat(); loadConvs(); } catch (er) { toast(er.message, true); }
+    let n = 0;
+    try { n = (await api("/api/conv/files", {id})).files.length; } catch (er) {}
+    if (!confirm(n ? "تحذف المحادثة وكل ملفاتها (مجلدها والملفات اللي سواها الإيجنت)؟\nتروح لسلة المحذوفات وتقدر ترجعها منها." : "تحذف المحادثة؟")) return;
+    try { const r = await api("/api/conv/delete", {id}); if (cur && cur.id === id) newChat(); loadConvs(); toast(r.removed ? "انحذفت المحادثة وملفاتها" : "انحذفت المحادثة"); } catch (er) { toast(er.message, true); }
   }, "danger");
   m.classList.add("on");
   const r = e.target.closest("button").getBoundingClientRect();
@@ -578,7 +616,7 @@ function renderAgents() {
   }
   $("#think").style.display = S.agents[active].kind === "ollama" ? "" : "none";
   const st = S.status[active];
-  $("#hint").textContent = st === "loading" ? "يتحمّل في الكرت…" : st === "pulling" ? "ينزّل النموذج…" : "";
+  if (!(live && !live.done)) $("#hint").textContent = st === "loading" ? "يتحمّل في الكرت…" : st === "pulling" ? "ينزّل النموذج…" : "";
 }
 async function switchTo(k) {
   if (k === active) return;
@@ -644,12 +682,27 @@ inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !
 $("#send").onclick = () => (live && !live.done) ? stop() : send();
 $("#think").onclick = async () => { think = !think; $("#think").classList.toggle("on", think); try { await api("/api/settings", {think}); } catch (e) {} };
 
-function uploadFile(f) {
+let convPending = null;
+function ensureConv() {
+  if (cur) return Promise.resolve(cur.id);
+  if (!convPending) {
+    convPending = api("/api/conv/new", {agent: active}).then(r => {
+      cur = {id: r.id, title: "محادثة جديدة", agent: active, messages: [], usage: 0};
+      return r.id;
+    }).finally(() => { convPending = null; });
+  }
+  return convPending;
+}
+async function uploadFile(f) {
+  if (live && !live.done && cur && live.conv === cur.id) { toast("انتظر المهمة تخلص قبل ما ترفق", true); return; }
+  const convId = await ensureConv().catch(e => { toast(e.message, true); return null; });
+  if (!convId) return;
   const a = {name: f.name || "paste.png", size: f.size, status: "up", pct: 0, rec: null};
   atts.push(a); renderAtts(); updateSend();
   const xhr = new XMLHttpRequest();
   xhr.open("POST", "/api/upload");
   xhr.setRequestHeader("X-3zT", "1");
+  xhr.setRequestHeader("X-Conv", convId);
   xhr.setRequestHeader("X-File-Name", encodeURIComponent(a.name));
   xhr.upload.onprogress = e => { if (e.lengthComputable) { a.pct = Math.round(e.loaded / e.total * 100); renderAtts(); } };
   xhr.onload = () => {
@@ -688,7 +741,7 @@ async function send(textOverride) {
   const ready = atts.filter(a => a.status === "ok").map(a => a.rec);
   if (atts.some(a => a.status === "up")) return;
   if (!text && !ready.length) return;
-  const body = {conv: cur && cur.messages.length ? cur.id : null, agent: active, text, attachments: ready};
+  const body = {conv: cur ? cur.id : null, agent: active, text, attachments: ready};
   inp.value = ""; autoGrow(); const saved = atts; atts = []; renderAtts(); updateSend();
   try {
     const r = await api("/api/chat", body);
@@ -719,7 +772,7 @@ async function handoff() {
 }
 
 // ================= settings =================
-let warm = true;
+let warm = true, dsExec = false;
 function openSettings(tab) {
   const s = S.settings;
   $("#sKey").value = ""; $("#sKey").placeholder = s.has_key ? `محفوظ (${s.key_hint}) — اكتب مفتاح جديد لتغييره` : "sk-...";
@@ -727,11 +780,34 @@ function openSettings(tab) {
   $("#sEffort").value = s.deepseek_effort; $("#sExec").value = s.executor_model; $("#sFree").value = s.free_model;
   $("#sCtx").value = String(s.num_ctx); if (!$("#sCtx").value) $("#sCtx").insertAdjacentHTML("beforeend", `<option value="${s.num_ctx}" selected>${s.num_ctx}</option>`);
   $("#sSteps").value = s.max_steps; warm = !!s.keep_executor_warm; $("#sWarm").classList.toggle("on", warm);
+  dsExec = !!s.deepseek_exec; $("#sDsExec").classList.toggle("on", dsExec);
   $("#sWs").value = s.workspace; $("#sComfy").value = s.comfy_dir;
   api("/api/memory").then(r => $("#sMem").value = r.text || "").catch(() => {});
   setTab(tab || "ds"); $("#settings").classList.add("on"); loadHealth();
 }
-function setTab(t) { $$(".tab").forEach(x => x.classList.toggle("on", x.dataset.tab === t)); $$(".pane").forEach(x => x.classList.toggle("on", x.dataset.pane === t)); if (t === "health") loadHealth(); }
+function setTab(t) { $$(".tab").forEach(x => x.classList.toggle("on", x.dataset.tab === t)); $$(".pane").forEach(x => x.classList.toggle("on", x.dataset.pane === t)); if (t === "health") loadHealth(); if (t === "skills") loadSkills(); }
+async function loadSkills() {
+  const box = $("#skList"); box.innerHTML = `<div class="sk"><i class="spin"></i></div>`;
+  try {
+    const list = await api("/api/skills");
+    box.innerHTML = "";
+    for (const s of list) {
+      const d = document.createElement("div"); d.className = "sk";
+      d.innerHTML = `<div class="sw${s.enabled ? " on" : ""}"></div><div class="t"><b>${esc(s.name)}</b><span title="${esc(s.description)}">${esc(s.description)}</span></div><span class="tag">${s.builtin ? "مدمجة" : "مثبتة"}</span>`;
+      d.querySelector(".sw").onclick = async e => { const on = !e.target.classList.contains("on"); e.target.classList.toggle("on", on); await api("/api/skills/toggle", {name: s.name, on}); };
+      if (!s.builtin) d.appendChild(iconBtn("trash", "حذف", async () => { await api("/api/skills/remove", {name: s.name}); loadSkills(); }));
+      box.appendChild(d);
+    }
+  } catch (e) { box.textContent = e.message; }
+}
+$("#skInstall").onclick = async () => {
+  const url = $("#skUrl").value.trim(); if (!url) return;
+  const b = $("#skInstall"); b.disabled = true; b.textContent = "يثبت…";
+  try { const r = await api("/api/skills/install", {url}); toast("تثبتت: " + r.installed.join("، ")); $("#skUrl").value = ""; loadSkills(); }
+  catch (e) { toast(e.message, true); }
+  b.disabled = false; b.textContent = "تثبيت";
+};
+$("#sExecRow").onclick = () => { dsExec = !dsExec; $("#sDsExec").classList.toggle("on", dsExec); };
 $$(".tab").forEach(t => t.onclick = () => setTab(t.dataset.tab));
 $("#sWarmRow").onclick = () => { warm = !warm; $("#sWarm").classList.toggle("on", warm); };
 $$("[data-close]").forEach(b => b.onclick = () => b.closest(".modal").classList.remove("on"));
@@ -745,7 +821,7 @@ $("#sKeyTest").onclick = async () => {
 };
 $("#saveSettings").onclick = async () => {
   const body = {deepseek_model: $("#sDsModel").value, deepseek_effort: $("#sEffort").value, executor_model: $("#sExec").value.trim(),
-    free_model: $("#sFree").value.trim(), num_ctx: +$("#sCtx").value, max_steps: +$("#sSteps").value, keep_executor_warm: warm,
+    free_model: $("#sFree").value.trim(), num_ctx: +$("#sCtx").value, max_steps: +$("#sSteps").value, keep_executor_warm: warm, deepseek_exec: dsExec,
     workspace: $("#sWs").value.trim(), comfy_dir: $("#sComfy").value.trim()};
   if ($("#sKey").value.trim()) body.deepseek_key = $("#sKey").value.trim();
   try {
@@ -818,5 +894,7 @@ addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye", "");
   if (deep && convs.some(c => c.id === deep)) await openConv(deep);
   else if (S && S.run) await openConv(S.run.conv);
   else { const last = store.get("last", null); if (last && convs.some(c => c.id === last)) await openConv(last); else renderThread(); }
+  const st = new URLSearchParams(location.search).get("settings");
+  if (st && S) openSettings(st);
   updateSend(); inp.focus();
 })();

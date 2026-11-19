@@ -26,6 +26,7 @@ import comfy  # noqa: E402
 import llm  # noqa: E402
 import media  # noqa: E402
 import pc  # noqa: E402
+import skills_mgr  # noqa: E402
 import stats  # noqa: E402
 import store  # noqa: E402
 import tools  # noqa: E402
@@ -117,6 +118,37 @@ def build_user_message(text, atts):
     if shown:
         msg["attachments"] = shown
     return msg
+
+
+def conv_files(conv):
+    """Files on disk that belong to a chat: its folder + new files it created elsewhere."""
+    out = []
+    d = Path(S["workspace"]) / "chats" / conv["id"]
+    if d.exists():
+        out.append(str(d))
+    for f in conv.get("files", []):
+        p = Path(f)
+        if p.exists() and not _within(p, d):
+            out.append(str(p))
+    return out
+
+
+def _within(p, d):
+    try:
+        Path(p).resolve().relative_to(Path(d).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def delete_conv_files(conv):
+    """Recycle the chat's files and drop its cached frames/thumbnails."""
+    n = tools.recycle(conv_files(conv))
+    for m in conv.get("messages", []):
+        for img in m.get("images") or []:
+            if _within(img, MEDIA_DIR):
+                Path(img).unlink(missing_ok=True)
+    return n
 
 
 # ============================ lifecycle ============================
@@ -310,6 +342,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, body)
             if path == "/api/memory":
                 return self._json({"text": agent.read_memory()})
+            if path == "/api/skills":
+                return self._json(sorted(skills_mgr.all_skills().values(), key=lambda x: (not x["builtin"], x["name"])))
             return self._send(404, b"not found", "text/plain")
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -459,11 +493,39 @@ class H(BaseHTTPRequestHandler):
                     conv["pinned"] = not conv.get("pinned")
                     store.save(conv)
                 return self._json({"ok": bool(conv)})
+            if path == "/api/conv/new":
+                conv = store.new(b.get("agent") if b.get("agent") in AGENTS else S["active"])
+                return self._json({"id": conv["id"]})
+            if path == "/api/conv/files":
+                conv = store.get(b.get("id", ""))
+                return self._json({"files": conv_files(conv) if conv else []})
             if path == "/api/conv/delete":
                 if any(r.running() and r.conv["id"] == b.get("id") for r in agent.RUNS.values()):
                     return self._json({"error": "المحادثة شغالة، وقفها أول"}, 409)
+                conv = store.get(b.get("id", ""))
+                removed = 0
+                if conv and b.get("files", True):
+                    removed = delete_conv_files(conv)
                 store.delete(b.get("id", ""))
+                return self._json({"ok": True, "removed": removed})
+            if path == "/api/open_path":
+                p = Path(str(b.get("path") or ""))
+                if not p.exists():
+                    return self._json({"error": "الملف مو موجود (ممكن انحذف أو انتقل)"}, 404)
+                if IS_WIN:
+                    if b.get("reveal"):
+                        subprocess.Popen(["explorer", "/select,", str(p)], creationflags=NO_WINDOW)
+                    else:
+                        os.startfile(str(p))  # noqa
                 return self._json({"ok": True})
+            if path == "/api/skills/install":
+                names = skills_mgr.install(str(b.get("url") or ""))
+                return self._json({"ok": True, "installed": names})
+            if path == "/api/skills/toggle":
+                skills_mgr.set_enabled(str(b.get("name")), bool(b.get("on")))
+                return self._json({"ok": True})
+            if path == "/api/skills/remove":
+                return self._json({"ok": skills_mgr.remove(str(b.get("name")))})
             if path == "/api/reset_always":
                 agent.ALWAYS.clear()
                 return self._json({"ok": True})
@@ -510,6 +572,8 @@ class H(BaseHTTPRequestHandler):
             S["keep_executor_warm"] = bool(b["keep_executor_warm"])
         if "think" in b:
             S["think"] = bool(b["think"])
+        if "deepseek_exec" in b:
+            S["deepseek_exec"] = bool(b["deepseek_exec"])
         if b.get("num_ctx"):
             n = max(4096, min(int(b["num_ctx"]), 131072))
             if n != S["num_ctx"]:
@@ -525,7 +589,8 @@ class H(BaseHTTPRequestHandler):
     def _upload(self):
         name = Path(urllib.parse.unquote(self.headers.get("X-File-Name") or "file")).name or "file"
         name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)[:120]
-        up = Path(S["workspace"]) / "_uploads" / time.strftime("%Y-%m-%d")
+        conv = store.get(self.headers.get("X-Conv") or "") or store.new(S["active"])
+        up = agent.chat_dir(conv) / "uploads"
         up.mkdir(parents=True, exist_ok=True)
         p = up / name
         if p.exists():
@@ -539,7 +604,7 @@ class H(BaseHTTPRequestHandler):
                 f.write(chunk)
                 left -= len(chunk)
         ext = p.suffix.lower()
-        rec = {"name": name, "path": str(p), "size": p.stat().st_size}
+        rec = {"name": name, "path": str(p), "size": p.stat().st_size, "conv": conv["id"]}
         if ext in media.VIDEO_EXT:
             desc, frames = media.video_frames(p)
             rec.update(kind="video", desc=desc, images=frames,
@@ -577,6 +642,7 @@ class H(BaseHTTPRequestHandler):
             return self._json({"error": "اكتب شي"}, 400)
         conv = store.get(b.get("conv") or "") or store.new(key)
         msg = build_user_message(text, atts)
+        agent.chat_dir(conv)
         if not conv["messages"]:
             conv["title"] = store.auto_title(text or (atts[0].get("name") if atts else ""))
         conv["messages"].append(msg)

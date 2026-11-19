@@ -15,6 +15,7 @@ from pathlib import Path
 import comfy
 import llm
 import media
+import skills_mgr
 import store
 import tools
 from config import AGENTS, MEMORY_FILE, OLLAMA_URL, model_of
@@ -36,6 +37,22 @@ STORE_CAP = 50_000
 
 def media_url(path):
     return "/media?p=" + urllib.parse.quote(str(path))
+
+
+def chat_dir(conv):
+    """Every chat has its own folder; deleting the chat deletes it."""
+    d = Path(S["workspace"]) / "chats" / conv["id"]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def file_card(p):
+    p = Path(p)
+    try:
+        size = p.stat().st_size
+    except OSError:
+        size = 0
+    return {"url": media_url(p), "path": str(p), "name": p.name, "size": size, "kind": _kind(p)}
 
 
 # ============================ model management ============================
@@ -171,14 +188,15 @@ def read_memory():
         return ""
 
 
-def system_prompt(key):
+def system_prompt(key, conv=None):
     ws = S["workspace"]
+    folder = str(chat_dir(conv)) if conv else ws
     now = time.strftime("%Y-%m-%d %H:%M (%A)")
     mem = read_memory()
     base = f"""أنت 3zT Agent، مساعد شخصي ذكي يشتغل على كمبيوتر صاحبه مباشرة.
 - الوقت الحالي: {now}. الجهاز: ويندوز، كرت NVIDIA RTX 4070 Super (12GB)، رام 16GB.
-- رد دايمًا بالعربي باللهجة السعودية، بوضوح واختصار، واستخدم Markdown (عناوين وقوائم وجداول وكود) لما يفيد.
-- مجلد الشغل: {ws} — أي ملف تسويه احفظه فيه إذا ما انطلب مكان ثاني. المرفقات تنحفظ في {ws}\\_uploads.
+- رد دايمًا بالعربي باللهجة السعودية (مو مصري ولا فصحى ثقيلة)، بوضوح واختصار، واستخدم Markdown لما يفيد.
+- مجلد هالمحادثة: {folder} — المرفقات فيه، وكل ملف تسويه يتحفظ فيه تلقائيًا (المسارات النسبية تبدأ منه). مجلد الشغل العام: {ws}.
 - الأوامر تشتغل في PowerShell. ffmpeg و ffprobe متوفرين للفيديو والصوت والصور.
 
 ## الصلاحيات
@@ -195,13 +213,19 @@ def system_prompt(key):
 - بعد أي خطوة مهمة تأكد من النتيجة (اقرأ الملف، شيك على الفيديو بـ media_info، أو خذ لقطة شاشة).
 - التحكم بالجهاز: خذ screenshot أول، والإحداثيات تكون بمقاس الصورة اللي شفتها. كل أداة تحكم ترجع لك لقطة جديدة؛ تأكد إن الخطوة نجحت قبل اللي بعدها.
 - الإنترنت: web_search للبحث و fetch_url لقراءة صفحة، و download للتحميل (يدعم يوتيوب وتيك توك وإكس).
-- الصور والفيديو: لتعديل صورة موجودة edit_image، لصورة جديدة generate_image، للفيديو generate_video، وكلها بوصف إنجليزي ينفذ الطلب حرفيًا.
-  ولتفريغ الكلام وترجمات SRT استخدم transcribe، وللتعليق الصوتي text_to_speech، ولإزالة الخلفية remove_background، وللتكبير upscale_image.
+- تعديل الفيديو: استخدم أداة video (عمليات جاهزة ومجربة: قص، ضغط، دمج، تحويل عمودي، إصلاح تشوهات وتوهج ووميض repair، رفع دقة upscale_ai...) بدل ما تكتب أوامر ffmpeg طويلة. ffmpeg الخام بس للأشياء اللي ما تغطيها.
+- تعديل الصور العادي: أداة image. edit_image / generate_image للذكاء الاصطناعي على الصور بس (ممنوع تعطيها فيديو)، generate_video لفيديو جديد. الوصف بالإنجليزي.
+- التفريغ والترجمة transcribe، التعليق الصوتي text_to_speech، إزالة الخلفية remove_background، تكبير الصور upscale_image.
+- النتائج (صور، فيديو، صوت، ملفات) تطلع لصاحب الجهاز في الشات تلقائيًا؛ ولو تبي تعرض ملف موجود استخدم send_file.
 - إذا عرفت معلومة دايمة عن صاحب الجهاز أو تفضيلاته وطلب تحفظها، استخدم remember.
 - في النهاية قل باختصار وش سويت بالضبط ووين الملفات. الصور والفيديو الناتجة تطلع له في المحادثة تلقائيًا."""
+    cat = skills_mgr.catalog()
+    if cat:
+        base += ("\n\n## المهارات (Skills)\nقبل أي مهمة من هالأنواع، حمّل المهارة المناسبة بـ load_skill واتبع تعليماتها بدقة:\n"
+                 + cat)
     if mem:
         base += f"\n\n## ملاحظات محفوظة عن صاحب الجهاز\n{mem[-4000:]}"
-    if AGENTS[key]["role"] == "planner":
+    if AGENTS[key]["role"] == "planner" and not S.get("deepseek_exec"):
         return base + """
 
 ## دورك: المخطط
@@ -408,7 +432,7 @@ class Run:
 
     # ---- generation (VRAM juggling) ----
     def generate(self, name, args):
-        out_dir = Path(S["workspace"]) / "generated"
+        out_dir = chat_dir(self.conv) / "generated"
         out_dir.mkdir(parents=True, exist_ok=True)
         self.progress("أفضّي الكرت للتوليد...")
         with VRAM_LOCK:
@@ -434,33 +458,56 @@ def _strip_think_tags(text):
     return text
 
 
+UNFINISHED = ("لنبدأ", "نبدأ", "بنبدأ", "هبدأ", "هنبدأ", "سأبدأ", "سأقوم", "بسوي الحين", "راح أسوي", "خلني أ", "الحين ب",
+              "الخطوة الجاية", "الخطوة التالية", "let's start", "let me", "i will now", "i'll now", "next, i", "now i will")
+
+
+def _looks_unfinished(text):
+    """Small models often announce the next step and then stop without calling a tool."""
+    t = (text or "").strip()
+    if not t or t.endswith(("?", "؟")):
+        return False
+    tail = t[-160:].lower()
+    return t.endswith((":", "：", "...", "…")) or any(w in tail for w in UNFINISHED)
+
+
+def _phase(run, text):
+    run.emit("phase", text=text)
+
+
 def run_agent(run: Run):
     conv, key = run.conv, run.key
     a = AGENTS[key]
     kind = a["kind"]
-    names = tools.PLANNER_TOOLS if a["role"] == "planner" else tools.ALL
+    planner_only = a["role"] == "planner" and not S.get("deepseek_exec")
+    names = tools.PLANNER_TOOLS if planner_only else tools.ALL
     schemas = tools.schemas(names)
-    ctx = {"workspace": S["workspace"], "created": CREATED, "progress": run.progress,
+    base = chat_dir(conv)
+    ctx = {"workspace": S["workspace"], "base": str(base), "created": CREATED, "progress": run.progress,
            "cancel": run.cancel, "generate": run.generate}
     try:
         if kind == "deepseek" and not S.get("deepseek_key"):
             run.notice("حط مفتاح DeepSeek من الإعدادات ⚙️ عشان يشتغل المخطط.")
             return
         if kind == "ollama":
+            _phase(run, "يجهّز النموذج في كرت الشاشة")
             err = ensure_local(key, run.progress)
             if err:
                 run.notice(err)
                 return
-        sysmsg = {"role": "system", "content": system_prompt(key)}
-        budget = 500_000 if kind == "deepseek" else int(S["num_ctx"] * 2.3) - len(sysmsg["content"]) - 9000
+        sysmsg = {"role": "system", "content": system_prompt(key, conv)}
+        budget = 500_000 if kind == "deepseek" else int(S["num_ctx"] * 2.3) - len(sysmsg["content"]) - 12000
         budget = max(budget, 12_000)
         max_steps = int(S.get("max_steps") or 40)
         fails, repeats, last_sig, stop_tools = {}, 0, None, False
+        nudges, empties = 0, 0
 
-        for step in range(max_steps + 1):
+        step = 0
+        while step <= max_steps:
             if run.cancel.is_set():
                 break
             final_step = step == max_steps
+            _phase(run, "يجهّز الطلب" if step == 0 else f"يكمّل — الخطوة {step + 1}")
             msgs = [sysmsg] + attach_images(build_context(conv, kind, budget), kind, run)
             use_tools = None if (stop_tools or final_step) else schemas
             if final_step:
@@ -468,20 +515,27 @@ def run_agent(run: Run):
             am = {"role": "assistant", "content": "", "reasoning": "", "agent": key}
             conv["messages"].append(am)
             run.emit("assistant", agent=key)
+            _phase(run, "النموذج يقرأ المحادثة ويفكر" if kind == "ollama" else "DeepSeek يفكر")
             if kind == "deepseek":
                 gen = llm.stream_deepseek(S["deepseek_key"], S["deepseek_model"], S.get("deepseek_effort", "high"),
                                           msgs, use_tools, run.cancel)
             else:
                 gen = llm.stream_ollama(model_of(key, S), msgs, use_tools, run.cancel, run.think, S["num_ctx"])
             calls, err = [], None
-            last_save = time.time()
+            last_save, said_think, said_text = time.time(), False, False
             for t, v in gen:
                 if t == "think":
                     am["reasoning"] += v
                     run.emit("think", text=v)
+                    if not said_think:
+                        _phase(run, "يفكر")
+                        said_think = True
                 elif t == "text":
                     am["content"] += v
                     run.emit("text", text=v)
+                    if not said_text:
+                        _phase(run, "يكتب")
+                        said_text = True
                 elif t == "tool_calls":
                     calls = v
                 elif t == "usage":
@@ -494,9 +548,6 @@ def run_agent(run: Run):
                     last_save = time.time()
             if calls and stop_tools:          # told to stop using tools: never execute more
                 calls = []
-                if not am["content"]:
-                    am["content"] = "ما قدرت أكمل: نفس الخطوة فشلت أكثر من مرة. شوف آخر خطأ فوق وقل لي كيف تبيني أكمل."
-                    run.emit("text", text=am["content"])
             cleaned = _strip_think_tags(am["content"])
             if cleaned != am["content"]:
                 am["content"] = cleaned
@@ -504,15 +555,41 @@ def run_agent(run: Run):
             if calls:
                 am["tool_calls"] = calls
                 run.emit("tool_calls", calls=calls)
+            empty = not am["content"].strip() and not calls
             if not am["content"] and not am["reasoning"] and not calls:
                 if conv["messages"] and conv["messages"][-1] is am:
                     conv["messages"].pop()
                     run.emit("drop_assistant")
             store.save(conv)
             if err:
-                run.notice(err)
+                run.notice(err + " — أعد المحاولة بزر ↻ تحت.")
                 return
-            if not calls or run.cancel.is_set():
+            if run.cancel.is_set():
+                break
+
+            if not calls:
+                # --- never end silently ---
+                if empty and any(m["role"] == "tool" for m in conv["messages"][run.base:]):
+                    break                     # work was done: the final summary below takes over
+                if empty:
+                    empties += 1
+                    if empties <= 2:
+                        _phase(run, "النموذج ما رد، أعيد المحاولة")
+                        run.add({"role": "user", "internal": True,
+                                 "content": "(النظام: ما كتبت أي رد. كمّل المهمة الحين: استخدم الأدوات أو اكتب ردك النهائي.)"})
+                        step += 1
+                        continue
+                    run.notice("النموذج ما رجّع أي رد. جرّب المنفذ أو DeepSeek، أو شغّل «تفكير عميق».")
+                    break
+                if (_looks_unfinished(am["content"]) and nudges < 2 and not stop_tools and not final_step
+                        and not planner_only):
+                    nudges += 1
+                    _phase(run, "يكمّل التنفيذ")
+                    run.add({"role": "user", "internal": True,
+                             "content": "(النظام: لا توقف عند الكلام. نفّذ الخطوة اللي قلتها الحين باستدعاء الأداة المناسبة، "
+                                        "وكمّل لين تخلص المهمة كاملة.)"})
+                    step += 1
+                    continue
                 break
 
             for c in calls:
@@ -524,11 +601,12 @@ def run_agent(run: Run):
                     res = tools.Result("خطأ: المدخلات مو JSON صحيح. أعد الاستدعاء بمدخلات صحيحة.", error=True)
                 elif name not in names:
                     res = tools.Result(f"خطأ: الأداة {name} مو متاحة لك" +
-                                       (" (المخطط يقرأ بس؛ التنفيذ للمنفذ)." if a["role"] == "planner" else "."), error=True)
+                                       (" (المخطط يقرأ بس؛ التنفيذ للمنفذ)." if planner_only else "."), error=True)
                 else:
-                    info = tools.needs_approval(name, args, S["workspace"], CREATED)
+                    info = tools.needs_approval(name, args, ctx)
                     ans = "yes"
                     if info:
+                        _phase(run, "ينتظر موافقتك")
                         ans = run.ask(c["id"], info)
                         tm["approval"] = {"title": info["title"], "detail": info.get("detail", "")[:2000], "answer": ans}
                     if ans == "no":
@@ -536,6 +614,7 @@ def run_agent(run: Run):
                         tm["denied"] = True
                     else:
                         run.emit("tool_start", id=c["id"], name=name)
+                        _phase(run, "ينفّذ: " + name)
                         t0 = time.time()
                         res = tools.execute(name, args, ctx)
                         tm["ms"] = int((time.time() - t0) * 1000)
@@ -555,8 +634,39 @@ def run_agent(run: Run):
                 if res.images:
                     tm["images"] = res.images
                 if res.media:
-                    tm["media"] = [{"url": media_url(p), "path": str(p), "kind": _kind(p)} for p in res.media]
+                    tm["media"] = [file_card(p) for p in dict.fromkeys(res.media) if Path(p).exists()]
+                if res.created:
+                    files = conv.setdefault("files", [])
+                    files += [p for p in res.created if p not in files]
                 run.add(tm)
+            step += 1
+
+        # --- guarantee a final answer after tool work ---
+        msgs_now = conv["messages"]
+        last_tool = max((i for i, m in enumerate(msgs_now) if m["role"] == "tool" and i >= run.base), default=-1)
+        has_final = any(m["role"] == "assistant" and (m.get("content") or "").strip() and not m.get("tool_calls")
+                        for m in msgs_now[last_tool + 1:])
+        if not run.cancel.is_set() and last_tool >= 0 and not has_final:
+            _phase(run, "يكتب الملخص")
+            am = {"role": "assistant", "content": "", "reasoning": "", "agent": key}
+            conv["messages"].append(am)
+            run.emit("assistant", agent=key)
+            msgs = [sysmsg] + attach_images(build_context(conv, kind, budget), kind, run)
+            msgs.append({"role": "user", "content": "(النظام: اكتب الحين ردك النهائي لصاحب الجهاز: وش سويت بالضبط، "
+                                                    "وش نجح ووش ما نجح، ووين الملفات.)"})
+            gen = (llm.stream_deepseek(S["deepseek_key"], S["deepseek_model"], "low", msgs, None, run.cancel)
+                   if kind == "deepseek" else
+                   llm.stream_ollama(model_of(key, S), msgs, None, run.cancel, False, S["num_ctx"]))
+            for t, v in gen:
+                if t == "text":
+                    am["content"] += v
+                    run.emit("text", text=v)
+                elif t == "think":
+                    am["reasoning"] += v
+                    run.emit("think", text=v)
+            if not am["content"].strip():
+                am["content"] = "خلصت الخطوات اللي فوق. افتح «خطوات العمل» تشوف نتيجة كل خطوة."
+                run.emit("text", text=am["content"])
     except Exception as e:
         LOG.exception("agent error")
         run.notice(f"خطأ داخلي: {type(e).__name__}: {e}")
@@ -590,7 +700,9 @@ def _kind(p):
         return "video"
     if ext in media.AUDIO_EXT:
         return "audio"
-    return "image"
+    if ext in media.IMAGE_EXT:
+        return "image"
+    return "file"
 
 
 def start(conv, key, think):

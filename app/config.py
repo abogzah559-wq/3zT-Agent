@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "3zT-Agent"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PORT = int(os.environ.get("AGENT_PORT", "7272"))
 IS_WIN = sys.platform == "win32"
 NO_WINDOW = 0x08000000 if IS_WIN else 0
@@ -77,8 +77,10 @@ DEFAULT_SETTINGS = {
     "active": "executor",
     "keep_executor_warm": True,         # keep the executor in VRAM while on DeepSeek
     "num_ctx": 32768,
-    "think": False,                     # local models: deep thinking toggle
+    "think": True,                      # local models: think before answering (much better with tools)
     "max_steps": 40,
+    "deepseek_exec": False,             # let DeepSeek execute with tools too (smartest option)
+    "rev": 2,
 }
 
 _lock = threading.Lock()
@@ -93,6 +95,8 @@ def load_settings():
                 s.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
         except Exception:
             pass
+    if int(s.get("rev") or 1) < 2:        # v1.1: thinking on by default for local models
+        s["think"], s["rev"] = True, 2
     if s.get("active") not in AGENTS:
         s["active"] = "executor"
     if s.get("deepseek_model") not in DEEPSEEK_MODELS:

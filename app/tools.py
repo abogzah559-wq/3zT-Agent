@@ -25,8 +25,10 @@ from pathlib import Path
 import comfy
 import media
 import pc
+import skills_mgr
+import videotools
 import web
-from config import IS_WIN, MEMORY_FILE, NO_WINDOW
+from config import EXTRAS_PY, IS_WIN, LOCAL_DIR, MEMORY_FILE, NO_WINDOW
 
 MAX_READ = 60_000
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", "venv", ".venv", "site-packages", "$RECYCLE.BIN",
@@ -64,9 +66,21 @@ def inside(p, ws):
         return False
 
 
+def _env():
+    """Child processes see the extras venv and the bundled node modules (used by skills)."""
+    env = dict(os.environ)
+    node_mods = LOCAL_DIR / "node" / "node_modules"
+    if node_mods.exists():
+        env["NODE_PATH"] = str(node_mods) + os.pathsep + env.get("NODE_PATH", "")
+    if EXTRAS_PY.exists():
+        env["PATH"] = str(EXTRAS_PY.parent) + os.pathsep + env.get("PATH", "")
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def _run(cmd, timeout=600, shell=False, cwd=None):
     r = subprocess.run(cmd, shell=shell, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=timeout, creationflags=NO_WINDOW, cwd=cwd)
+                       errors="replace", timeout=timeout, creationflags=NO_WINDOW, cwd=cwd, env=_env())
     out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr else "")
     if len(out) > MAX_READ:
         out = out[:4000] + f"\n...(قطعت {len(out) - MAX_READ + 4000:,} حرف من النص)...\n" + out[-(MAX_READ - 4000):]
@@ -225,6 +239,33 @@ TOOLS = {
     "generate_video": _fn("generate_video", "Generate a short new AI video (Wan 2.1, 480p, 16fps, 1-6s). Prompt in ENGLISH: scene + motion.",
                           {"prompt": S, "negative": S, "seconds": N,
                            "orientation": {"type": "string", "enum": ["landscape", "portrait"]}}, ["prompt"]),
+    # ---- reliable media operations (prefer these over raw ffmpeg) ----
+    "video": _fn("video", "Edit/repair a VIDEO with a ready, tested operation (preferred over raw ffmpeg). "
+                 "operation: trim(start,end) | compress(target_mb or crf) | resize(width/height) | vertical(mode blur|crop) | "
+                 "crop(x,y,width,height) | speed(factor) | reverse | merge(inputs[]) | gif(start,end,width,fps) | "
+                 "extract_audio(format) | replace_audio(audio) | mute | fps(fps, smooth) | burn_subtitles(subtitles) | "
+                 "overlay(image, position, scale) | rotate(degrees) | normalize_audio | thumbnail(time) | "
+                 "repair(presets[]: deflicker, denoise, strong_denoise, temporal, dehalo, deband, deblock, sharpen, color, stabilize) | "
+                 "upscale_ai(scale 2|4, anime, height). Output is saved in the chat folder and shown to the user.",
+                 {"path": S, "operation": {"type": "string", "enum": videotools.VIDEO_OPS},
+                  "start": S, "end": S, "time": S, "target_mb": N, "crf": I, "width": I, "height": I, "x": I, "y": I,
+                  "mode": S, "factor": N, "inputs": {"type": "array", "items": S}, "fps": I, "smooth": B,
+                  "format": S, "audio": S, "subtitles": S, "image": S, "position": S, "scale": N, "degrees": I,
+                  "presets": {"type": "array", "items": {"type": "string", "enum": videotools.REPAIR_PRESETS}},
+                  "anime": B}, ["operation"]),
+    "image": _fn("image", "Edit an IMAGE with a ready operation: resize(width/height) | crop(x,y,width,height) | rotate(degrees) | "
+                 "flip(direction) | convert(format png/jpg/webp) | compress(quality, format) | grayscale | blur(amount) | "
+                 "sharpen(amount) | brightness(brightness, contrast, saturation) | denoise. Output shown to the user.",
+                 {"path": S, "operation": {"type": "string", "enum": videotools.IMAGE_OPS}, "width": I, "height": I,
+                  "x": I, "y": I, "degrees": I, "direction": S, "format": S, "quality": I, "amount": N,
+                  "brightness": N, "contrast": N, "saturation": N}, ["path", "operation"]),
+    "send_file": _fn("send_file", "Show files to the user in the chat (images/videos/audio play inline, other files get "
+                     "open buttons). Use it to deliver results.", {"paths": {"type": "array", "items": S}}, ["paths"]),
+    # ---- skills ----
+    "load_skill": _fn("load_skill", "Load the full instructions of a skill from the skills list before doing that kind of task.",
+                      {"name": S}, ["name"]),
+    "install_skill": _fn("install_skill", "Install agent skill(s) from a GitHub link to a folder containing SKILL.md.",
+                         {"url": S}, ["url"]),
     # ---- memory ----
     "remember": _fn("remember", "Save a lasting note about the user or his preferences for future chats.",
                     {"note": S}, ["note"]),
@@ -232,7 +273,7 @@ TOOLS = {
 
 GENERATE = {"generate_image", "edit_image", "generate_video"}
 READ_ONLY = ["list_dir", "read_file", "search_files", "grep", "find_duplicates", "system_info", "screenshot",
-             "list_windows", "web_search", "fetch_url", "view_image", "video_frames", "media_info"]
+             "list_windows", "web_search", "fetch_url", "view_image", "video_frames", "media_info", "load_skill"]
 CONTROL = {"mouse_click", "mouse_drag", "scroll", "type_text", "press_keys", "focus_window"}
 ALL = list(TOOLS)
 PLANNER_TOOLS = READ_ONLY + ["remember"]
@@ -243,27 +284,31 @@ def schemas(names):
 
 
 # ---------------- approval ----------------
-def needs_approval(name, args, ws, created):
+def needs_approval(name, args, ctx):
     """Returns None, or {"cat", "title", "detail", "diff"?} describing what will happen.
 
     cat "delete" can never be auto-approved; the others accept "always for this session"."""
+    ws, root, created = ctx["base"], ctx["workspace"], ctx["created"]
     try:
         if name in READ_ONLY or name in GENERATE or name in ("remember", "make_dir", "download", "ffmpeg",
                                                               "transcribe", "text_to_speech", "remove_background",
-                                                              "upscale_image"):
-            if name == "make_dir" and not inside(_p(args.get("path"), ws), ws):
+                                                              "upscale_image", "video", "image", "load_skill",
+                                                              "send_file"):
+            if name == "make_dir" and not inside(_p(args.get("path"), ws), root):
                 return {"cat": "write", "title": "إنشاء مجلد خارج مجلد الشغل", "detail": str(_p(args.get("path"), ws))}
             return None
         if name == "clipboard":
             return None
+        if name == "install_skill":
+            return {"cat": "write", "title": "تثبيت مهارة من GitHub", "detail": str(args.get("url", ""))}
         if name in ("write_file", "edit_file"):
             p = _p(args.get("path"), ws)
             mine = str(p) in created
             if not p.exists():
-                if inside(p, ws):
+                if inside(p, root):
                     return None
                 return {"cat": "write", "title": "إنشاء ملف خارج مجلد الشغل", "detail": str(p)}
-            if mine and inside(p, ws):
+            if mine and inside(p, root):
                 return None
             try:
                 old = p.read_text(encoding="utf-8", errors="replace")
@@ -276,7 +321,7 @@ def needs_approval(name, args, ws, created):
             return {"cat": "write", "title": "تعديل ملف موجود", "detail": str(p), "diff": _diff(old, new, p.name)}
         if name == "copy_path":
             d = _p(args.get("dst"), ws)
-            if inside(d, ws) and not d.exists():
+            if inside(d, root) and not d.exists():
                 return None
             return {"cat": "write", "title": "نسخ", "detail": f"{_p(args.get('src'), ws)}\n← إلى: {d}"}
         if name == "delete_path":
@@ -317,8 +362,9 @@ def needs_approval(name, args, ws, created):
 
 # ---------------- execution ----------------
 class Result:
-    def __init__(self, text, images=None, media=None, error=False):
+    def __init__(self, text, images=None, media=None, error=False, created=None):
         self.text, self.images, self.media, self.error = text, images or [], media or [], error
+        self.created = created or []      # new files outside the chat folder (deleted with the chat)
 
 
 def _shot_result(ws, screen="all", note=""):
@@ -345,7 +391,7 @@ def execute(name, args, ctx):
 
 
 def _execute(name, args, ctx):
-    ws = ctx["workspace"]
+    ws = ctx["base"]          # this chat's folder: relative paths and all outputs go here
     try:
         if name == "list_dir":
             p = _p(args.get("path"), ws)
@@ -447,7 +493,8 @@ def _execute(name, args, ctx):
             p.write_text(args.get("content", ""), encoding="utf-8", newline="")
             if not existed:
                 ctx["created"].add(str(p))
-            return Result(f"{'تم التعديل' if existed else 'تم الإنشاء'}: {p} ({_human(p.stat().st_size)})")
+            return Result(f"{'تم التعديل' if existed else 'تم الإنشاء'}: {p} ({_human(p.stat().st_size)})",
+                          media=[str(p)] if not existed else [], created=[str(p)] if not existed else [])
 
         if name == "edit_file":
             p = _p(args.get("path"), ws)
@@ -476,7 +523,7 @@ def _execute(name, args, ctx):
             else:
                 shutil.copy2(src, dst)
             ctx["created"].add(str(dst))
-            return Result(f"انتسخ إلى: {dst}")
+            return Result(f"انتسخ إلى: {dst}", created=[str(dst)])
 
         if name == "move_path":
             src, dst = _p(args["src"], ws), _p(args["dst"], ws)
@@ -528,7 +575,7 @@ def _execute(name, args, ctx):
             f = scripts / f"script_{time.strftime('%Y%m%d_%H%M%S')}.py"
             f.write_text(args["code"], encoding="utf-8")
             to = max(5, min(int(args.get("timeout_sec") or 600), 7200))
-            py = sys.executable.replace("pythonw.exe", "python.exe")
+            py = str(EXTRAS_PY) if EXTRAS_PY.exists() else sys.executable.replace("pythonw.exe", "python.exe")
             env_code, out = _run([py, "-X", "utf8", str(f)], to, cwd=ws)
             return Result(f"exit={env_code}\n{out}", error=env_code != 0)
 
@@ -596,8 +643,7 @@ def _execute(name, args, ctx):
         if name == "download":
             out_dir = Path(ws) / "downloads"
             files = media.download(args["url"], out_dir, bool(args.get("audio_only")))
-            shown = [f for f in files if Path(f).suffix.lower() in media.IMAGE_EXT | media.VIDEO_EXT]
-            return Result("تم التحميل:\n" + "\n".join(f"{f} ({_human(Path(f).stat().st_size)})" for f in files), media=shown)
+            return Result("تم التحميل:\n" + "\n".join(f"{f} ({_human(Path(f).stat().st_size)})" for f in files), media=files)
 
         if name == "view_image":
             p = _p(args["path"], ws)
@@ -631,16 +677,16 @@ def _execute(name, args, ctx):
             if "already exists" in out:
                 return Result(f"خطأ: الملف {outp} موجود أصلًا وما أكتب فوقه. اختر اسم جديد للناتج.", error=True)
             ok = code == 0 and outp is not None and outp.exists() and outp.stat().st_size > 0
-            shown = [str(outp)] if ok and outp.suffix.lower() in media.IMAGE_EXT | media.VIDEO_EXT | media.AUDIO_EXT else []
             info = f"تم: {outp} ({_human(outp.stat().st_size)})" if ok else ""
-            return Result(f"exit={code}\n{info}\n{out[-3500:]}".strip(), media=shown, error=not ok)
+            return Result(f"exit={code}\n{info}\n{out[-3500:]}".strip(), media=[str(outp)] if ok else [],
+                          error=not ok, created=[str(outp)] if ok else [])
 
         if name == "transcribe":
             p = _p(args["path"], ws)
             ctx["progress"]("يفرّغ الصوت بـ Whisper... (أول مرة ينزل النموذج)")
             res = media.transcribe(p, Path(ws) / "subtitles", args.get("language") or "auto")
             return Result(f"تم التفريغ ({res['language']}, {res['duration']} ثانية, على {res['device']} خلال {res['seconds']} ث)\n"
-                          f"SRT: {res['srt']}\nTXT: {res['txt']}\n\nالنص:\n{res['text']}")
+                          f"SRT: {res['srt']}\nTXT: {res['txt']}\n\nالنص:\n{res['text']}", media=[res["srt"], res["txt"]])
 
         if name == "text_to_speech":
             voice = args.get("voice") or "ar-SA-HamedNeural"
@@ -667,10 +713,49 @@ def _execute(name, args, ctx):
             media.upscale(p, out, scale, bool(args.get("anime")))
             return Result(f"تم التكبير: {out}", media=[str(out)])
 
+        if name == "video":
+            src = _p(args.get("path") or (args.get("inputs") or [""])[0], ws)
+            if args.get("operation") == "merge":
+                args = {**args, "inputs": [str(_p(x, ws)) for x in args.get("inputs") or []]}
+            for k in ("audio", "subtitles", "image"):
+                if args.get(k):
+                    args = {**args, k: str(_p(args[k], ws))}
+            outs, msg = videotools.video(args, src, Path(ws) / "edited", ctx["progress"], ctx["cancel"],
+                                         media.realesrgan_exe())
+            return Result(msg, media=[str(o) for o in outs])
+
+        if name == "image":
+            outs, msg = videotools.image(args, _p(args.get("path"), ws), Path(ws) / "edited", ctx["progress"])
+            jpg, _, _ = media.to_jpeg(outs[0], 768)
+            return Result(msg, images=[str(jpg)] if jpg else [], media=[str(o) for o in outs])
+
+        if name == "send_file":
+            ok, missing = [], []
+            for x in args.get("paths") or []:
+                p = _p(x, ws)
+                (ok if p.exists() else missing).append(str(p))
+            if not ok:
+                return Result("خطأ: ما لقيت الملفات: " + ", ".join(missing), error=True)
+            return Result("انعرضت للمستخدم: " + ", ".join(ok) + (f"\nما لقيت: {missing}" if missing else ""), media=ok)
+
+        if name == "load_skill":
+            _, text = skills_mgr.load(str(args.get("name", "")).strip())
+            return Result(text)
+
+        if name == "install_skill":
+            names = skills_mgr.install(str(args["url"]))
+            return Result("تثبتت المهارات: " + ", ".join(names) + " — تقدر تستخدمها بـ load_skill")
+
         if name in GENERATE:
+            src_img = args.get("image_path")
+            if src_img and Path(str(src_img)).suffix.lower() in media.VIDEO_EXT:
+                return Result("خطأ: edit_image للصور بس. للفيديو استخدم أداة video (مثلاً operation=repair) "
+                              "أو اطلع صورة منه بـ video operation=thumbnail.", error=True)
             reason = hard_limit(" ".join(str(args.get(k, "")) for k in ("prompt",)))
             if reason:
                 return Result(reason, error=True)
+            if args.get("image_path"):
+                args = {**args, "image_path": str(_p(args["image_path"], ws))}
             files = ctx["generate"](name, args)
             imgs = []
             if name != "generate_video":
@@ -694,6 +779,32 @@ def _execute(name, args, ctx):
     except Exception as e:
         return Result(f"خطأ: {type(e).__name__}: {e}", error=True)
     return Result(f"خطأ: أداة غير معروفة: {name}", error=True)
+
+
+# ---------------- recycle (used when a chat is deleted) ----------------
+def recycle(paths):
+    """Send files/folders to the Recycle Bin (Windows) or ~/.3zt-trash. Returns how many were removed."""
+    paths = [Path(p) for p in paths if p and Path(p).exists()]
+    if not paths:
+        return 0
+    if IS_WIN:
+        lst = Path(os.environ.get("TEMP", ".")) / f"3zt_recycle_{int(time.time() * 1000)}.txt"
+        lst.write_text("\n".join(str(p) for p in paths), encoding="utf-8")
+        lit = str(lst).replace("'", "''")
+        _ps("Add-Type -AssemblyName Microsoft.VisualBasic; "
+            f"Get-Content -LiteralPath '{lit}' -Encoding UTF8 | ForEach-Object {{ "
+            "if (Test-Path -LiteralPath $_ -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($_, 'OnlyErrorDialogs', 'SendToRecycleBin') } "
+            "elseif (Test-Path -LiteralPath $_) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($_, 'OnlyErrorDialogs', 'SendToRecycleBin') } }", 600)
+        lst.unlink(missing_ok=True)
+    else:
+        trash = Path.home() / ".3zt-trash"
+        trash.mkdir(exist_ok=True)
+        for p in paths:
+            try:
+                shutil.move(str(p), str(trash / f"{int(time.time() * 1000)}_{p.name}"))
+            except OSError:
+                pass
+    return sum(1 for p in paths if not p.exists())
 
 
 # ---------------- system info ----------------

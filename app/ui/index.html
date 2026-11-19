@@ -75,6 +75,7 @@
         <button class="tab on" data-tab="ds"><svg class="i sm" data-i="cloud"></svg>DeepSeek</button>
         <button class="tab" data-tab="local"><svg class="i sm" data-i="chip"></svg>النماذج المحلية</button>
         <button class="tab" data-tab="paths"><svg class="i sm" data-i="folder"></svg>المجلدات</button>
+        <button class="tab" data-tab="skills"><svg class="i sm" data-i="sparkle"></svg>المهارات</button>
         <button class="tab" data-tab="mem"><svg class="i sm" data-i="bookmark"></svg>الذاكرة</button>
         <button class="tab" data-tab="health"><svg class="i sm" data-i="pulse"></svg>حالة الجهاز</button>
       </div>
@@ -88,6 +89,8 @@
             <div class="help">deepseek-flash أسرع وأرخص، و deepseek-v4-pro أقوى للتخطيط المعقد.</div></div>
           <div class="fld"><label>عمق التفكير</label><select class="inp" id="sEffort">
             <option value="low">خفيف (أسرع)</option><option value="high">عالي (الافتراضي)</option><option value="max">أقصى شي (أبطأ وأدق)</option></select></div>
+          <div class="fld"><div class="swrow" id="sExecRow"><div class="sw" id="sDsExec"></div>خلّ DeepSeek ينفّذ بنفسه بكل الأدوات (أذكى بكثير من النماذج المحلية، والموافقات شغالة)</div>
+            <div class="help">لما يكون مطفي: المخطط يقرأ ويخطط بس، والتنفيذ للمنفذ المحلي.</div></div>
         </div>
         <div class="pane" data-pane="local">
           <div class="fld"><label>نموذج المنفذ (Ollama)</label><input class="inp ltr" id="sExec"></div>
@@ -103,6 +106,12 @@
             <div class="help">الإيجنت يحفظ فيه ملفاته بدون ما يستأذن. أي شي برّاه يحتاج موافقتك.</div></div>
           <div class="fld"><label>مجلد ComfyUI (لتوليد الصور والفيديو)</label><input class="inp ltr" id="sComfy"></div>
           <div class="inrow"><button class="btn soft" data-open="workspace"><svg class="i sm" data-i="folder"></svg>افتح مجلد الشغل</button><button class="btn soft" data-open="data"><svg class="i sm" data-i="folder"></svg>مجلد البيانات والسجل</button></div>
+        </div>
+        <div class="pane" data-pane="skills">
+          <div class="fld"><label>تثبيت مهارة من GitHub</label>
+            <div class="inrow"><input class="inp ltr" id="skUrl" placeholder="https://github.com/owner/repo/tree/main/skills/name"><button class="btn soft" id="skInstall">تثبيت</button></div>
+            <div class="help">أي مجلد فيه SKILL.md (نفس صيغة مهارات Anthropic). أو قل للإيجنت: «ثبّت هالمهارة: الرابط».</div></div>
+          <div class="skills" id="skList"></div>
         </div>
         <div class="pane" data-pane="mem">
           <div class="fld"><label>اللي يعرفه الإيجنت عنك (يقراه في كل محادثة)</label>

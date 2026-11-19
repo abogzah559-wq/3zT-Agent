@@ -1,6 +1,6 @@
 # Optional open-source extras, isolated in their own Python 3.12 venv:
-#   faster-whisper (speech-to-text, subtitles), rembg (background removal),
-#   edge-tts (neural voice-over), yt-dlp, and Real-ESRGAN ncnn-vulkan (image upscaling).
+#   faster-whisper (speech-to-text, subtitles), rembg (background removal), edge-tts (voice-over), yt-dlp,
+#   document libraries for the skills, Node packages (docx, pptxgenjs) and Real-ESRGAN ncnn-vulkan (upscaling).
 param([switch]$NoPause)
 . "$PSScriptRoot\common.ps1"
 RefreshPath
@@ -29,6 +29,22 @@ Say "Installing faster-whisper, rembg, edge-tts, yt-dlp (a few minutes)..."
 & $vpy -m pip install --upgrade faster-whisper "rembg[cpu]" pillow edge-tts yt-dlp
 Say "Installing CUDA libraries so Whisper runs on your GPU (~1 GB)..."
 & $vpy -m pip install --upgrade nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"
+
+Say "Installing document & image libraries used by the skills (Word, PDF, Excel, PowerPoint, GIF)..."
+& $vpy -m pip install --upgrade pypdf pdfplumber reportlab openpyxl pandas python-docx python-pptx defusedxml lxml pyyaml imageio numpy "markitdown[pptx,docx,pdf,xlsx]"
+
+# Node.js packages used by the docx / pptx skills
+if (-not (Have node)) {
+  Say "Installing Node.js (for Word/PowerPoint skills)..."
+  winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent
+  RefreshPath
+}
+if (Have npm) {
+  $nodeDir = Join-Path $LocalDir "node"
+  New-Item -ItemType Directory -Force -Path $nodeDir | Out-Null
+  Say "Installing docx + pptxgenjs..."
+  & npm install --prefix $nodeDir docx pptxgenjs --no-audit --no-fund
+} else { Say "npm not found; Word/PowerPoint creation skills will be limited." Yellow }
 
 # Real-ESRGAN portable (Vulkan: runs on any GPU, no CUDA needed)
 $rdir = Join-Path $LocalDir "tools\realesrgan"
