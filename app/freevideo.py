@@ -172,7 +172,7 @@ $name = [System.Windows.Automation.AutomationElement]::NameProperty
 $win = $A::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children,
   (New-Object System.Windows.Automation.PropertyCondition($name, 'FreeVideo')))
 if (-not $win) { 'nowindow'; exit }
-foreach ($n in @('Later', 'Launch FreeVideo', 'Open FreeVideo')) {
+foreach ($n in @('Later', 'Launch FreeVideo')) {
   $b = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
     (New-Object System.Windows.Automation.PropertyCondition($name, $n)))
   if ($b -and $b.Current.IsEnabled) {
@@ -222,7 +222,7 @@ def ensure_running(progress, cancel, timeout=900):
         if not pressed and waited >= 6 and tries < 12:
             tries += 1
             res = _press_launch()
-            if res.startswith("clicked:Launch") or res.startswith("clicked:Open"):
+            if res.startswith("clicked:Launch"):
                 pressed = True
                 progress("ضغطت تشغيل في FreeVideo — ينتظر ComfyUI يقوم")
         if waited > 45 and not hinted:
