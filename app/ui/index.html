@@ -74,6 +74,7 @@
       <div class="tabs" id="tabs">
         <button class="tab on" data-tab="ds"><svg class="i sm" data-i="cloud"></svg>DeepSeek</button>
         <button class="tab" data-tab="local"><svg class="i sm" data-i="chip"></svg>النماذج المحلية</button>
+        <button class="tab" data-tab="gen"><svg class="i sm" data-i="wand"></svg>التوليد</button>
         <button class="tab" data-tab="paths"><svg class="i sm" data-i="folder"></svg>المجلدات</button>
         <button class="tab" data-tab="skills"><svg class="i sm" data-i="sparkle"></svg>المهارات</button>
         <button class="tab" data-tab="mem"><svg class="i sm" data-i="bookmark"></svg>الذاكرة</button>
@@ -89,8 +90,7 @@
             <div class="help">deepseek-flash أسرع وأرخص، و deepseek-v4-pro أقوى للتخطيط المعقد.</div></div>
           <div class="fld"><label>عمق التفكير</label><select class="inp" id="sEffort">
             <option value="low">خفيف (أسرع)</option><option value="high">عالي (الافتراضي)</option><option value="max">أقصى شي (أبطأ وأدق)</option></select></div>
-          <div class="fld"><div class="swrow" id="sExecRow"><div class="sw" id="sDsExec"></div>خلّ DeepSeek ينفّذ بنفسه بكل الأدوات (أذكى بكثير من النماذج المحلية، والموافقات شغالة)</div>
-            <div class="help">لما يكون مطفي: المخطط يقرأ ويخطط بس، والتنفيذ للمنفذ المحلي.</div></div>
+          <div class="fld"><div class="help">DeepSeek عنده كل الأدوات: قل له «خطط» ويكتب خطة، أو قل له «سوّ» وينفّذ بنفسه — على كيفك. الموافقات على الحذف والأوامر شغالة.</div></div>
         </div>
         <div class="pane" data-pane="local">
           <div class="fld"><label>نموذج المنفذ (Ollama)</label><input class="inp ltr" id="sExec"></div>
@@ -99,13 +99,25 @@
           <div class="fld"><label>حجم الذاكرة (السياق)</label><select class="inp" id="sCtx">
             <option value="8192">8K — أخف شي</option><option value="16384">16K</option><option value="32768">32K — موصى به لكرتك</option><option value="65536">64K — محادثات طويلة جدًا</option></select></div>
           <div class="fld"><label>أقصى عدد خطوات للمهمة الوحدة</label><input class="inp ltr" id="sSteps" type="number" min="5" max="150"></div>
-          <div class="fld"><div class="swrow" id="sWarmRow"><div class="sw" id="sWarm"></div>خلّ المنفذ جاهز في الكرت وأنا على DeepSeek (رجعة فورية + يعطي المخطط عيون)</div></div>
+          <div class="fld"><div class="swrow" id="sWarmRow"><div class="sw" id="sWarm"></div>خلّ المنفذ جاهز في الكرت وأنا على DeepSeek (رجعة فورية + يعطي DeepSeek عيون)</div></div>
         </div>
         <div class="pane" data-pane="paths">
           <div class="fld"><label>مجلد الشغل</label><input class="inp ltr" id="sWs">
             <div class="help">الإيجنت يحفظ فيه ملفاته بدون ما يستأذن. أي شي برّاه يحتاج موافقتك.</div></div>
-          <div class="fld"><label>مجلد ComfyUI (لتوليد الصور والفيديو)</label><input class="inp ltr" id="sComfy"></div>
           <div class="inrow"><button class="btn soft" data-open="workspace"><svg class="i sm" data-i="folder"></svg>افتح مجلد الشغل</button><button class="btn soft" data-open="data"><svg class="i sm" data-i="folder"></svg>مجلد البيانات والسجل</button></div>
+        </div>
+        <div class="pane" data-pane="gen">
+          <div class="fld"><label>FreeVideo — توليد الصور والفيديو محليًا</label>
+            <div class="health" id="fvBox"></div>
+            <div class="inrow" style="margin-top:8px"><button class="btn soft" id="fvStart"><svg class="i sm" data-i="rocket"></svg>شغّل FreeVideo الحين</button></div>
+            <div class="help">MiniMax H3 للفيديو بالصوت، و H3 Image / Qwen-Image 2.1 للصور. البرنامج يشغّله لحاله وقت التوليد. ما هو مثبت؟ شغّل install-freevideo.bat</div></div>
+          <div class="fld"><label>نموذج الصور</label><select class="inp" id="sImgModel">
+            <option value="auto">تلقائي (المثبت في FreeVideo)</option><option value="minimax-h3-image">MiniMax H3 Image (حتى 16 ميقا)</option><option value="qwen-image-2.1-turbo">Qwen-Image 2.1 Turbo (أسرع)</option></select></div>
+          <div class="fld"><label>LoRA للوكلاء بدون قيود (DeepSeek و «بدون قيود»)</label>
+            <textarea class="inp ltr" id="sLoras" style="min-height:64px;height:76px" placeholder="my-style.safetensors:0.8"></textarea>
+            <div class="help">سطر لكل LoRA بصيغة الاسم:القوة، والملف يكون في مجلد models/loras حق ComfyUI اللي ثبته FreeVideo. المنفذ الرسمي ما يستخدمها.</div></div>
+          <div class="fld"><label>مجلد FreeVideo</label><input class="inp ltr" id="sFvHome"></div>
+          <div class="fld"><div class="swrow" id="sFvStopRow"><div class="sw" id="sFvStop"></div>اقفل FreeVideo مع البرنامج إذا كان البرنامج هو اللي شغّله</div></div>
         </div>
         <div class="pane" data-pane="skills">
           <div class="fld"><label>تثبيت مهارة من GitHub</label>

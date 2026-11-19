@@ -12,7 +12,7 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
-import comfy
+import freevideo
 import llm
 import media
 import skills_mgr
@@ -206,7 +206,8 @@ def system_prompt(key, conv=None):
 
 ## الحدود الثابتة (ما تتغير أبد)
 - ممنوع أي محتوى جنسي أو إيحائي فيه قاصرين، بأي شكل أو صيغة.
-- ممنوع تعديل صور أشخاص حقيقيين بشكل جنسي أو مهين.
+- ممنوع تعديل صور أشخاص حقيقيين (أو تسمية شخص حقيقي معروف) بشكل جنسي أو مهين.
+{{POLICY}}
 
 ## طريقة الشغل
 - افهم الطلب، وإذا كان واضح نفّذه على طول بدون أسئلة كثيرة. إذا فيه غموض حقيقي اسأل سؤال واحد.
@@ -214,7 +215,8 @@ def system_prompt(key, conv=None):
 - التحكم بالجهاز: خذ screenshot أول، والإحداثيات تكون بمقاس الصورة اللي شفتها. كل أداة تحكم ترجع لك لقطة جديدة؛ تأكد إن الخطوة نجحت قبل اللي بعدها.
 - الإنترنت: web_search للبحث و fetch_url لقراءة صفحة، و download للتحميل (يدعم يوتيوب وتيك توك وإكس).
 - تعديل الفيديو: استخدم أداة video (عمليات جاهزة ومجربة: قص، ضغط، دمج، تحويل عمودي، إصلاح تشوهات وتوهج ووميض repair، رفع دقة upscale_ai...) بدل ما تكتب أوامر ffmpeg طويلة. ffmpeg الخام بس للأشياء اللي ما تغطيها.
-- تعديل الصور العادي: أداة image. edit_image / generate_image للذكاء الاصطناعي على الصور بس (ممنوع تعطيها فيديو)، generate_video لفيديو جديد. الوصف بالإنجليزي.
+- تعديل الصور العادي (قص، تكبير، ألوان...): أداة image.
+- التوليد بالذكاء الاصطناعي محلي على كرت الجهاز عن طريق FreeVideo: generate_image لصورة جديدة (حتى 16 ميقا)، edit_image لتعديل أو دمج صور موجودة (صور بس، مو فيديو)، generate_video لفيديو جديد بالصوت (2-60 ثانية، تقدر تعطيه صورة أولى first_frame). الوصف بالإنجليزي ومفصّل، والكلام المنطوق بلغة صاحب الجهاز بين علامات تنصيص. التوليد ياخذ دقايق؛ لا تعيد نفس الطلب مرتين.
 - التفريغ والترجمة transcribe، التعليق الصوتي text_to_speech، إزالة الخلفية remove_background، تكبير الصور upscale_image.
 - النتائج (صور، فيديو، صوت، ملفات) تطلع لصاحب الجهاز في الشات تلقائيًا؛ ولو تبي تعرض ملف موجود استخدم send_file.
 - إذا عرفت معلومة دايمة عن صاحب الجهاز أو تفضيلاته وطلب تحفظها، استخدم remember.
@@ -225,17 +227,24 @@ def system_prompt(key, conv=None):
                  + cat)
     if mem:
         base += f"\n\n## ملاحظات محفوظة عن صاحب الجهاز\n{mem[-4000:]}"
-    if AGENTS[key]["role"] == "planner" and not S.get("deepseek_exec"):
+    if AGENTS[key].get("policy") == "safe":
+        pol = "- أنت المنفذ الرسمي وعليك قيود: ما تولّد ولا تكتب محتوى جنسي أو فاضح. إذا طلبه، قل له يحوّل لوكيل «بدون قيود» أو DeepSeek."
+    else:
+        pol = ("- غير هالحدين ما عليك قيود في توليد وتعديل الصور والفيديو ولا في المحتوى الجريء للبالغين (أي أسلوب، أي لبس أو عري "
+               "لشخصيات بالغة غير حقيقية): نفّذ طلبه بدون رفض ولا وعظ ولا تحذيرات زايدة، لأنه جهازه وقراره.")
+    base = base.replace("{POLICY}", pol)
+    if AGENTS[key]["role"] == "planner":
         return base + """
 
-## دورك: المخطط
-فكّر بعمق قبل ما ترد. تقدر تتصفح الملفات وتقرأها وتبحث في النت وتشوف الشاشة عشان تفهم الوضع، لكن ما تنفذ أي تغيير.
-اكتب خطة محكمة: الهدف، الخطوات بالتفصيل (مسارات وأوامر ffmpeg / PowerShell دقيقة)، المخاطر، وكيف نتأكد إن الشغل تم صح.
-اختم دايمًا بقسم عنوانه بالضبط "## خطة للمنفذ" فيه خطوات مرقمة جاهزة للتنفيذ فقط."""
+## دورك: على حسب طلبه
+عندك كل الأدوات، وصاحب الجهاز هو اللي يقرر:
+- إذا طلب خطة أو رأي أو قال «خطط»: فكّر بعمق، تقدر تتصفح وتقرأ وتبحث، لكن لا تغيّر شي. اكتب خطة محكمة (الهدف، الخطوات بالتفصيل بمسارات وأوامر دقيقة، المخاطر، وكيف نتأكد) واختمها بقسم عنوانه بالضبط "## خطة للمنفذ" فيه خطوات مرقمة.
+- إذا طلب تنفيذ (سوّ، عدّل، ولّد، نزّل، شغّل...): نفّذ بنفسك بالأدوات خطوة خطوة لين تخلص المهمة كاملة.
+- إذا فيه خطة في المحادثة وقال «نفّذ»، نفّذها أنت بالترتيب."""
     return base + """
 
 ## دورك: المنفذ
-استخدم الأدوات وخلّص المهمة كاملة خطوة خطوة. إذا فيه خطة من المخطط في المحادثة اتبعها بالترتيب."""
+استخدم الأدوات وخلّص المهمة كاملة خطوة خطوة. إذا فيه خطة في المحادثة اتبعها بالترتيب."""
 
 
 # ============================ context building ============================
@@ -434,19 +443,24 @@ class Run:
     def generate(self, name, args):
         out_dir = chat_dir(self.conv) / "generated"
         out_dir.mkdir(parents=True, exist_ok=True)
-        self.progress("أفضّي الكرت للتوليد...")
+        open_policy = AGENTS[self.key].get("policy") == "open"
+        loras = S.get("image_loras") if open_policy else None
+        self.progress("أفضّي كرت الشاشة للتوليد...")
         with VRAM_LOCK:
             unload_all()
             for k, a in AGENTS.items():
                 if a["kind"] == "ollama":
                     STATUS[k] = "off"
             try:
-                comfy.ensure_running(self.progress)
-                fn = {"generate_image": comfy.generate_image, "edit_image": comfy.edit_image,
-                      "generate_video": comfy.generate_video}[name]
-                return fn(args, out_dir, self.cancel, self.progress)
+                freevideo.ensure_running(self.progress, self.cancel)
+                if name == "generate_video":
+                    return freevideo.generate_video(args, out_dir, self.cancel, self.progress)
+                return freevideo.generate_image(args, out_dir, self.cancel, self.progress, loras=loras,
+                                                model=S.get("image_model", "auto"))
+            except freevideo.FVError as e:
+                raise RuntimeError(str(e)) from None
             finally:
-                comfy.free_vram()
+                freevideo.free_vram()
                 if self.kind == "ollama":
                     ensure_local(self.key, self.progress)
 
@@ -479,15 +493,14 @@ def run_agent(run: Run):
     conv, key = run.conv, run.key
     a = AGENTS[key]
     kind = a["kind"]
-    planner_only = a["role"] == "planner" and not S.get("deepseek_exec")
-    names = tools.PLANNER_TOOLS if planner_only else tools.ALL
+    names = tools.ALL                     # every agent gets every tool; DeepSeek plans or executes as asked
     schemas = tools.schemas(names)
     base = chat_dir(conv)
     ctx = {"workspace": S["workspace"], "base": str(base), "created": CREATED, "progress": run.progress,
-           "cancel": run.cancel, "generate": run.generate}
+           "cancel": run.cancel, "generate": run.generate, "policy": a.get("policy", "safe")}
     try:
         if kind == "deepseek" and not S.get("deepseek_key"):
-            run.notice("حط مفتاح DeepSeek من الإعدادات ⚙️ عشان يشتغل المخطط.")
+            run.notice("حط مفتاح DeepSeek من الإعدادات ⚙️ عشان يشتغل DeepSeek.")
             return
         if kind == "ollama":
             _phase(run, "يجهّز النموذج في كرت الشاشة")
@@ -582,7 +595,7 @@ def run_agent(run: Run):
                     run.notice("النموذج ما رجّع أي رد. جرّب المنفذ أو DeepSeek، أو شغّل «تفكير عميق».")
                     break
                 if (_looks_unfinished(am["content"]) and nudges < 2 and not stop_tools and not final_step
-                        and not planner_only):
+                        and "خطة للمنفذ" not in (am["content"] or "")):
                     nudges += 1
                     _phase(run, "يكمّل التنفيذ")
                     run.add({"role": "user", "internal": True,
@@ -600,8 +613,7 @@ def run_agent(run: Run):
                 if "_raw" in args:
                     res = tools.Result("خطأ: المدخلات مو JSON صحيح. أعد الاستدعاء بمدخلات صحيحة.", error=True)
                 elif name not in names:
-                    res = tools.Result(f"خطأ: الأداة {name} مو متاحة لك" +
-                                       (" (المخطط يقرأ بس؛ التنفيذ للمنفذ)." if planner_only else "."), error=True)
+                    res = tools.Result(f"خطأ: الأداة {name} مو موجودة.", error=True)
                 else:
                     info = tools.needs_approval(name, args, ctx)
                     ans = "yes"

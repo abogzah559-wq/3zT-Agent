@@ -1,6 +1,6 @@
 "use strict";
 /* 3zT Agent UI — no frameworks, no build step. */
-const UI_VERSION = "1.1.0";
+const UI_VERSION = "1.2.0";
 
 // ================= icons =================
 const ICONS = {
@@ -334,8 +334,10 @@ function renderAI(t, isLive) {
   if (!isLive || (live && live.done)) {
     const acts = document.createElement("div"); acts.className = "actions";
     if (agentKey === "planner" && finalText && /خطة للمنفذ/.test(finalText) && isLastTurn(t)) {
-      const h = document.createElement("button"); h.className = "handoff"; h.innerHTML = icon("rocket", "sm") + "سلّم الخطة للمنفذ";
-      h.onclick = handoff; acts.appendChild(h);
+      const h = document.createElement("button"); h.className = "handoff"; h.innerHTML = icon("rocket", "sm") + "نفّذها يا DeepSeek";
+      h.onclick = () => handoff("planner"); acts.appendChild(h);
+      const h2 = document.createElement("button"); h2.className = "handoff"; h2.innerHTML = icon("chip", "sm") + "سلّمها للمحلي";
+      h2.onclick = () => handoff("executor"); acts.appendChild(h2);
     }
     if (finalText) acts.appendChild(iconBtn("copy", "نسخ الرد", () => copyText(finalText)));
     if (isLastTurn(t)) acts.appendChild(iconBtn("refresh", "أعد المحاولة", retry));
@@ -651,7 +653,7 @@ function banner() {
   if (pulls.length) return showBanner("warn", pulls[0].text + ` (${pulls[0].pct}%)`);
   if (S.version !== UI_VERSION) return showBanner("warn", "البرنامج تحدّث — سكّره وافتحه من جديد.");
   if (a.kind === "ollama" && !S.ollama) return showBanner("err", "Ollama مو شغال. سكّر البرنامج وافتحه من الاختصار، أو شغّل Ollama يدويًا.");
-  if (a.kind === "deepseek" && !S.settings.has_key) return showBanner("warn", "حط مفتاح DeepSeek عشان يشتغل المخطط.", "افتح الإعدادات", () => openSettings("ds"));
+  if (a.kind === "deepseek" && !S.settings.has_key) return showBanner("warn", "حط مفتاح DeepSeek عشان يشتغل.", "افتح الإعدادات", () => openSettings("ds"));
   if (S.status[active] === "missing") return showBanner("warn", `النموذج ${a.model} مو منزّل — بينزل تلقائيًا أول ما ترسل (حوالي 6.6GB).`);
   b.className = "banner";
 }
@@ -766,13 +768,13 @@ async function retry() {
     connect(r.run, r.conv, 0);
   } catch (e) { toast(e.message, true); }
 }
-async function handoff() {
-  await switchTo("executor");
-  send("نفّذ «خطة للمنفذ» اللي كتبها المخطط فوق، خطوة خطوة، وتأكد من النتيجة بعد كل خطوة. وإذا خلصت قل لي وش سويت ووين الملفات.");
+async function handoff(target) {
+  if (target !== active) await switchTo(target);
+  send("نفّذ «خطة للمنفذ» اللي فوق بنفسك الحين، خطوة خطوة، وتأكد من النتيجة بعد كل خطوة. وإذا خلصت قل لي وش سويت ووين الملفات.");
 }
 
 // ================= settings =================
-let warm = true, dsExec = false;
+let warm = true, fvStop = true;
 function openSettings(tab) {
   const s = S.settings;
   $("#sKey").value = ""; $("#sKey").placeholder = s.has_key ? `محفوظ (${s.key_hint}) — اكتب مفتاح جديد لتغييره` : "sk-...";
@@ -780,12 +782,29 @@ function openSettings(tab) {
   $("#sEffort").value = s.deepseek_effort; $("#sExec").value = s.executor_model; $("#sFree").value = s.free_model;
   $("#sCtx").value = String(s.num_ctx); if (!$("#sCtx").value) $("#sCtx").insertAdjacentHTML("beforeend", `<option value="${s.num_ctx}" selected>${s.num_ctx}</option>`);
   $("#sSteps").value = s.max_steps; warm = !!s.keep_executor_warm; $("#sWarm").classList.toggle("on", warm);
-  dsExec = !!s.deepseek_exec; $("#sDsExec").classList.toggle("on", dsExec);
-  $("#sWs").value = s.workspace; $("#sComfy").value = s.comfy_dir;
+  fvStop = s.stop_freevideo_on_exit !== false; $("#sFvStop").classList.toggle("on", fvStop);
+  $("#sWs").value = s.workspace; $("#sFvHome").value = s.freevideo_home || ""; $("#sImgModel").value = s.image_model || "auto";
+  $("#sLoras").value = (s.image_loras || []).map(l => `${l.name}:${l.strength}`).join("\n");
   api("/api/memory").then(r => $("#sMem").value = r.text || "").catch(() => {});
   setTab(tab || "ds"); $("#settings").classList.add("on"); loadHealth();
 }
-function setTab(t) { $$(".tab").forEach(x => x.classList.toggle("on", x.dataset.tab === t)); $$(".pane").forEach(x => x.classList.toggle("on", x.dataset.pane === t)); if (t === "health") loadHealth(); if (t === "skills") loadSkills(); }
+function setTab(t) { $$(".tab").forEach(x => x.classList.toggle("on", x.dataset.tab === t)); $$(".pane").forEach(x => x.classList.toggle("on", x.dataset.pane === t)); if (t === "health") loadHealth(); if (t === "skills") loadSkills(); if (t === "gen") loadFv(); }
+async function loadFv() {
+  const box = $("#fvBox"); box.innerHTML = `<div class="h"><i class="spin"></i>يفحص…</div>`;
+  try {
+    const f = (await api("/api/health")).freevideo;
+    const row = (ok, name, note) => `<div class="h"><span class="${ok ? "ok" : "bad"}">${icon(ok ? "check" : "x", "sm")}</span>${name}<span class="s">${esc(note || "")}</span></div>`;
+    box.innerHTML = [
+      row(f.installed, "مثبت", f.installed ? f.home : (f.launcher ? "افتح FreeVideo وكمّل التثبيت" : "شغّل install-freevideo.bat")),
+      row(f.ready, "شغال وجاهز", f.ready ? `الإصدار ${f.version || ""} · ${f.url}` : (f.running ? (f.problem || "مو جاهز") : "مطفي — يشتغل تلقائيًا وقت التوليد")),
+    ].join("");
+  } catch (e) { box.textContent = e.message; }
+}
+$("#fvStart").onclick = async () => {
+  try { const r = await api("/api/freevideo/start", {}); if (r.ok) { toast("يشغّل FreeVideo… إذا ظهرت نافذته اضغط Launch"); setTimeout(loadFv, 8000); } else toast(r.error, true); }
+  catch (e) { toast(e.message, true); }
+};
+$("#sFvStopRow").onclick = () => { fvStop = !fvStop; $("#sFvStop").classList.toggle("on", fvStop); };
 async function loadSkills() {
   const box = $("#skList"); box.innerHTML = `<div class="sk"><i class="spin"></i></div>`;
   try {
@@ -807,7 +826,6 @@ $("#skInstall").onclick = async () => {
   catch (e) { toast(e.message, true); }
   b.disabled = false; b.textContent = "تثبيت";
 };
-$("#sExecRow").onclick = () => { dsExec = !dsExec; $("#sDsExec").classList.toggle("on", dsExec); };
 $$(".tab").forEach(t => t.onclick = () => setTab(t.dataset.tab));
 $("#sWarmRow").onclick = () => { warm = !warm; $("#sWarm").classList.toggle("on", warm); };
 $$("[data-close]").forEach(b => b.onclick = () => b.closest(".modal").classList.remove("on"));
@@ -821,8 +839,10 @@ $("#sKeyTest").onclick = async () => {
 };
 $("#saveSettings").onclick = async () => {
   const body = {deepseek_model: $("#sDsModel").value, deepseek_effort: $("#sEffort").value, executor_model: $("#sExec").value.trim(),
-    free_model: $("#sFree").value.trim(), num_ctx: +$("#sCtx").value, max_steps: +$("#sSteps").value, keep_executor_warm: warm, deepseek_exec: dsExec,
-    workspace: $("#sWs").value.trim(), comfy_dir: $("#sComfy").value.trim()};
+    free_model: $("#sFree").value.trim(), num_ctx: +$("#sCtx").value, max_steps: +$("#sSteps").value, keep_executor_warm: warm,
+    workspace: $("#sWs").value.trim(), freevideo_home: $("#sFvHome").value.trim(), image_model: $("#sImgModel").value,
+    stop_freevideo_on_exit: fvStop,
+    image_loras: $("#sLoras").value.split("\n").map(x => x.trim()).filter(Boolean).map(x => { const m = x.match(/^(.*?)(?::(-?[\d.]+))?$/); return {name: m[1].trim(), strength: m[2] ? +m[2] : 1}; })};
   if ($("#sKey").value.trim()) body.deepseek_key = $("#sKey").value.trim();
   try {
     await api("/api/settings", body);
@@ -844,9 +864,7 @@ async function loadHealth() {
       row(h.ytdlp, "yt-dlp (تحميل من المواقع)", h.ytdlp ? "" : "شغّل install.bat"),
       row(h.extras, "Whisper + إزالة الخلفية + الصوت", h.extras ? "" : "شغّل install-extras.bat"),
       row(h.realesrgan, "Real-ESRGAN (تكبير الصور)", h.realesrgan ? "" : "شغّل install-extras.bat"),
-      row(h.comfy, "ComfyUI", h.comfy ? h.comfy_dir : "مو موجود في " + h.comfy_dir),
-      row(h.image_models.realistic || h.image_models.anime, "نماذج الصور", `واقعي ${h.image_models.realistic ? "✓" : "✗"} · أنمي ${h.image_models.anime ? "✓" : "✗"}`),
-      row(h.video_model, "نموذج الفيديو Wan 2.1", h.video_model ? "" : "شغّل install-media.bat"),
+      row(h.freevideo.installed, "FreeVideo (توليد الصور والفيديو)", h.freevideo.installed ? (h.freevideo.ready ? "شغال" : "مثبت — يشتغل وقت التوليد") : "شغّل install-freevideo.bat"),
       row(h.nvidia, "كرت NVIDIA", h.nvidia ? "" : "nvidia-smi مو موجود"),
       row(h.pc_control, "التحكم بالجهاز", h.pc_control ? "" : "ويندوز بس"),
     ].join("");

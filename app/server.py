@@ -2,7 +2,7 @@
 
 Runs on http://127.0.0.1:7272 and opens itself as an app window (Edge/Chrome --app with a
 private profile). Closing that window shuts everything down: models leave VRAM, Ollama and
-ComfyUI are stopped, and this process exits.
+FreeVideo (if the app started it) are stopped, and this process exits.
 """
 import json
 import logging
@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import agent  # noqa: E402
-import comfy  # noqa: E402
+import freevideo  # noqa: E402
 import llm  # noqa: E402
 import media  # noqa: E402
 import pc  # noqa: E402
@@ -41,7 +41,7 @@ LOG.addHandler(_h)
 
 S = load_settings()
 agent.S = S
-comfy.set_dir(S["comfy_dir"])
+freevideo.configure(S["freevideo_home"], S["freevideo_url"])
 
 SEEN = {"last": 0.0, "bye": 0.0}
 WINDOW = {"proc": None, "started": 0.0, "closed_at": 0.0}
@@ -76,9 +76,7 @@ def health():
         "models": {k: (llm.norm_tag(model_of(k, S)) in installed) for k, a in AGENTS.items() if a["kind"] == "ollama"},
         "deepseek_key": bool(S.get("deepseek_key")),
         "ffmpeg": media.have("ffmpeg"), "ytdlp": media.ytdlp_cmd() is not None,
-        "comfy": comfy.installed(), "comfy_dir": str(comfy.COMFY["dir"]),
-        "image_models": {"realistic": bool(comfy.find_image_model("realistic")), "anime": bool(comfy.find_image_model("anime"))},
-        "video_model": comfy.video_ready(),
+        "freevideo": freevideo.health(),
         "extras": media.extras_ok(), "realesrgan": media.realesrgan_exe() is not None,
         "nvidia": nv, "pc_control": IS_WIN,
     }
@@ -196,10 +194,11 @@ def shutdown():
         agent.unload_all()
     except Exception:
         pass
-    try:
-        comfy.stop()
-    except Exception:
-        pass
+    if S.get("stop_freevideo_on_exit", True):
+        try:
+            freevideo.stop()
+        except Exception:
+            pass
     if IS_WIN:
         subprocess.run(["taskkill", "/F", "/IM", "ollama app.exe", "/IM", "ollama.exe"],
                        capture_output=True, creationflags=NO_WINDOW)
@@ -534,6 +533,16 @@ class H(BaseHTTPRequestHandler):
                 if IS_WIN:
                     os.startfile(target)  # noqa
                 return self._json({"ok": True})
+            if path == "/api/freevideo/start":
+                def _start():
+                    try:
+                        freevideo.ensure_running(lambda t: None, None, timeout=900)
+                    except Exception as e:
+                        LOG.warning("freevideo start: %s", e)
+                if not freevideo.launcher() and not freevideo.installed():
+                    return self._json({"ok": False, "error": "FreeVideo مو مثبت. شغّل install-freevideo.bat"})
+                threading.Thread(target=_start, daemon=True).start()
+                return self._json({"ok": True})
             if path == "/api/window":
                 open_window()
                 return self._json({"ok": True})
@@ -565,15 +574,31 @@ class H(BaseHTTPRequestHandler):
             ws = Path(os.path.expandvars(os.path.expanduser(str(b["workspace"]).strip())))
             ws.mkdir(parents=True, exist_ok=True)
             S["workspace"] = str(ws.resolve())
-        if b.get("comfy_dir"):
-            S["comfy_dir"] = str(b["comfy_dir"]).strip()
-            comfy.set_dir(S["comfy_dir"])
+        if b.get("freevideo_home"):
+            S["freevideo_home"] = str(b["freevideo_home"]).strip()
+        if "freevideo_url" in b:
+            u = str(b.get("freevideo_url") or "").strip().rstrip("/")
+            S["freevideo_url"] = u if re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", u) else ""
+        freevideo.configure(S["freevideo_home"], S["freevideo_url"])
+        if b.get("image_model") in ("auto", "minimax-h3-image", "qwen-image-2.1-turbo"):
+            S["image_model"] = b["image_model"]
+        if "image_loras" in b:
+            ls = []
+            for row in b.get("image_loras") or []:
+                name = str((row or {}).get("name") or "").strip()
+                if name and re.match(r"^[\w .\-/()\[\]]+\.(safetensors|ckpt|pt)$", name, re.I) and ".." not in name:
+                    try:
+                        st = max(-2.0, min(2.0, float((row or {}).get("strength", 1.0))))
+                    except (TypeError, ValueError):
+                        st = 1.0
+                    ls.append({"name": name, "strength": st})
+            S["image_loras"] = ls[:8]
+        if "stop_freevideo_on_exit" in b:
+            S["stop_freevideo_on_exit"] = bool(b["stop_freevideo_on_exit"])
         if "keep_executor_warm" in b:
             S["keep_executor_warm"] = bool(b["keep_executor_warm"])
         if "think" in b:
             S["think"] = bool(b["think"])
-        if "deepseek_exec" in b:
-            S["deepseek_exec"] = bool(b["deepseek_exec"])
         if b.get("num_ctx"):
             n = max(4096, min(int(b["num_ctx"]), 131072))
             if n != S["num_ctx"]:

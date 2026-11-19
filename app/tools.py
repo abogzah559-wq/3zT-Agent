@@ -22,7 +22,6 @@ import time
 import zipfile
 from pathlib import Path
 
-import comfy
 import media
 import pc
 import skills_mgr
@@ -41,10 +40,43 @@ _SEXUAL = r"\b(nude|nudes|naked|nsfw|sex|sexual|sexy|porn|porno|erotic|explicit|
 
 
 def hard_limit(text):
-    """Returns a refusal reason if a generation request crosses the built-in limits."""
+    """Returns a refusal reason if a generation request crosses the built-in limits (every agent)."""
     t = (text or "").lower()
     if re.search(_MINOR, t) and re.search(_SEXUAL, t):
         return "مرفوض: أي محتوى جنسي أو إيحائي فيه قاصرين ممنوع نهائيًا."
+    return None
+
+
+def sexual(text):
+    return bool(re.search(_SEXUAL, (text or "").lower()))
+
+
+def generated_by_app(path, root):
+    """Pictures the app generated itself live in <workspace>/chats/<id>/generated."""
+    try:
+        p = Path(path).resolve()
+        return p.parent.name == "generated" and inside(p, Path(root) / "chats")
+    except Exception:
+        return False
+
+
+def generation_policy(name, args, policy, root):
+    """None, or the reason a generation is refused for this agent.
+
+    - every agent: nothing sexual involving minors; no sexual edits of photos the app did not make itself
+      (they may show real people).
+    - "safe" agent (the official executor): no sexual or explicit content at all."""
+    prompt = str(args.get("prompt", ""))
+    reason = hard_limit(prompt)
+    if reason:
+        return reason
+    if policy == "safe" and sexual(prompt):
+        return ("المنفذ الرسمي عليه قيود وما يولّد محتوى جنسي أو فاضح. حوّل لوكيل «بدون قيود» أو DeepSeek من فوق "
+                "إذا تبي بدون قيود.")
+    inputs = list(args.get("images") or []) + [args.get(k) for k in ("first_frame", "last_frame") if args.get(k)]
+    if sexual(prompt) and any(not generated_by_app(i, root) for i in inputs):
+        return ("مرفوض: ما أسوي تعديل جنسي أو فاضح على صور حقيقية مرفوعة (ممكن تكون لناس حقيقيين). "
+                "أقدر أسويه على صور ولّدتها أنا.")
     return None
 
 
@@ -228,17 +260,27 @@ TOOLS = {
                              {"path": S}, ["path"]),
     "upscale_image": _fn("upscale_image", "Upscale an image x2 or x4 with Real-ESRGAN (sharper, more detail).",
                          {"path": S, "scale": I, "anime": B}, ["path"]),
-    "generate_image": _fn("generate_image", "Create a NEW image from text (ComfyUI, SDXL). To change an existing image use edit_image. "
-                          "Prompt in ENGLISH with every detail the user asked for.",
-                          {"prompt": S, "style": {"type": "string", "enum": ["realistic", "anime"]}, "negative": S,
-                           "width": I, "height": I, "count": I}, ["prompt"]),
-    "edit_image": _fn("edit_image", "Redraw an EXISTING image (img2img), keeping its composition. Prompt in ENGLISH describing "
-                      "the whole desired result. strength: 0.35-0.5 small change, 0.55-0.7 bigger, 0.8 almost new.",
-                      {"image_path": S, "prompt": S, "style": {"type": "string", "enum": ["realistic", "anime"]},
-                       "strength": N, "negative": S}, ["image_path", "prompt"]),
-    "generate_video": _fn("generate_video", "Generate a short new AI video (Wan 2.1, 480p, 16fps, 1-6s). Prompt in ENGLISH: scene + motion.",
-                          {"prompt": S, "negative": S, "seconds": N,
-                           "orientation": {"type": "string", "enum": ["landscape", "portrait"]}}, ["prompt"]),
+    "generate_image": _fn("generate_image", "Create NEW picture(s) from text with the local FreeVideo image model "
+                          "(MiniMax H3 Image or Qwen-Image 2.1, up to 16 MP). Write the prompt in ENGLISH with every detail "
+                          "the user asked for (subject, style, lighting, composition, any text to draw in quotes). "
+                          "To change an existing picture use edit_image.",
+                          {"prompt": S, "aspect": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"]},
+                           "quality": {"type": "string", "enum": ["standard", "high"]}, "count": I, "seed": I},
+                          ["prompt"]),
+    "edit_image": _fn("edit_image", "Change or combine EXISTING picture(s) (up to 4) with the local FreeVideo image model: "
+                      "change clothes/background/style, add or remove things, merge people or products. Prompt in ENGLISH "
+                      "saying the change; refer to inputs as image 1, image 2. Pictures only (for video use the video tool).",
+                      {"images": {"type": "array", "items": S}, "prompt": S,
+                       "aspect": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"]}},
+                      ["images", "prompt"]),
+    "generate_video": _fn("generate_video", "Generate a NEW video WITH SOUND locally (FreeVideo, MiniMax H3; 2-60 s, 24 fps). "
+                          "Prompt in ENGLISH: who/what is there, the action, camera, place, sounds; spoken lines word for word "
+                          "in quotes in the user's language. A short idea is fine: FreeVideo expands it. Optional first_frame/"
+                          "last_frame pictures (make one with generate_image first to control the look). Takes minutes.",
+                          {"prompt": S, "seconds": N,
+                           "aspect": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]},
+                           "quality": {"type": "string", "enum": ["light", "medium", "high", "max"]},
+                           "first_frame": S, "last_frame": S, "seed": I}, ["prompt"]),
     # ---- reliable media operations (prefer these over raw ffmpeg) ----
     "video": _fn("video", "Edit/repair a VIDEO with a ready, tested operation (preferred over raw ffmpeg). "
                  "operation: trim(start,end) | compress(target_mb or crf) | resize(width/height) | vertical(mode blur|crop) | "
@@ -276,7 +318,6 @@ READ_ONLY = ["list_dir", "read_file", "search_files", "grep", "find_duplicates",
              "list_windows", "web_search", "fetch_url", "view_image", "video_frames", "media_info", "load_skill"]
 CONTROL = {"mouse_click", "mouse_drag", "scroll", "type_text", "press_keys", "focus_window"}
 ALL = list(TOOLS)
-PLANNER_TOOLS = READ_ONLY + ["remember"]
 
 
 def schemas(names):
@@ -747,20 +788,35 @@ def _execute(name, args, ctx):
             return Result("تثبتت المهارات: " + ", ".join(names) + " — تقدر تستخدمها بـ load_skill")
 
         if name in GENERATE:
-            src_img = args.get("image_path")
-            if src_img and Path(str(src_img)).suffix.lower() in media.VIDEO_EXT:
-                return Result("خطأ: edit_image للصور بس. للفيديو استخدم أداة video (مثلاً operation=repair) "
-                              "أو اطلع صورة منه بـ video operation=thumbnail.", error=True)
-            reason = hard_limit(" ".join(str(args.get(k, "")) for k in ("prompt",)))
+            args = dict(args)
+            if name == "edit_image":
+                imgs = args.get("images") or ([args["image_path"]] if args.get("image_path") else [])
+                if isinstance(imgs, str):
+                    imgs = [imgs]
+                args["images"] = [str(_p(i, ws)) for i in imgs][:4]
+                if not args["images"]:
+                    return Result("خطأ: حدد صورة وحدة على الأقل في images.", error=True)
+                for i in args["images"]:
+                    if Path(i).suffix.lower() in media.VIDEO_EXT:
+                        return Result("خطأ: edit_image للصور بس. للفيديو استخدم أداة video (مثلاً operation=repair) "
+                                      "أو اطلع صورة منه بـ video operation=thumbnail.", error=True)
+                    if not Path(i).is_file():
+                        return Result(f"خطأ: الصورة مو موجودة: {i}", error=True)
+            for k in ("first_frame", "last_frame"):
+                if args.get(k):
+                    args[k] = str(_p(args[k], ws))
+                    if not Path(args[k]).is_file():
+                        return Result(f"خطأ: الصورة مو موجودة: {args[k]}", error=True)
+            reason = generation_policy(name, args, ctx.get("policy", "safe"), ctx["workspace"])
             if reason:
                 return Result(reason, error=True)
-            if args.get("image_path"):
-                args = {**args, "image_path": str(_p(args["image_path"], ws))}
             files = ctx["generate"](name, args)
             imgs = []
             if name != "generate_video":
-                jpg, _, _ = media.to_jpeg(files[0], 768)
-                imgs = [str(jpg)] if jpg else []
+                for f in files[:4]:
+                    jpg, _, _ = media.to_jpeg(f, 768)
+                    if jpg:
+                        imgs.append(str(jpg))
             return Result("تم التوليد وانحفظ في:\n" + "\n".join(str(f) for f in files),
                           images=imgs, media=[str(f) for f in files])
 
@@ -776,6 +832,8 @@ def _execute(name, args, ctx):
         return Result("خطأ: انتهى الوقت قبل ما يخلص الأمر", error=True)
     except KeyError as e:
         return Result(f"خطأ: ناقص المدخل {e}", error=True)
+    except RuntimeError as e:             # our own readable errors (generation, media helpers)
+        return Result(f"خطأ: {e}", error=True)
     except Exception as e:
         return Result(f"خطأ: {type(e).__name__}: {e}", error=True)
     return Result(f"خطأ: أداة غير معروفة: {name}", error=True)

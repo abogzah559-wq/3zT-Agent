@@ -10,17 +10,15 @@ description: Edit or create images - resize, crop, convert format, compress, rot
 | Resize / crop / rotate / convert (png↔jpg↔webp) / compress / blur / sharpen / grayscale / text | `image` tool (operation=...) |
 | Remove background → transparent PNG | `remove_background` |
 | Upscale with detail (photos or anime) | `upscale_image` (scale 2 or 4, anime=true for drawings) |
-| NEW image from a description | `generate_image` (English prompt, very detailed) |
-| Change the content/style of an EXISTING image | `edit_image` (strength 0.35-0.5 small change, 0.55-0.7 bigger) |
+| NEW image from a description | `generate_image` (English prompt, very detailed) — see the `ai-generation` skill |
+| Change / combine EXISTING images with AI | `edit_image` (images: up to 4, prompt says the change) |
 | Look at an image | `view_image` |
 
 ## Prompt writing for generate_image / edit_image
-- English, comma-separated, concrete: subject, action, clothing, setting, lighting, camera, style, quality words.
-- Example: "a samurai standing in heavy rain at night, neon signs reflecting on wet street, cinematic lighting, 35mm, highly detailed, sharp focus".
-- For anime use style=anime. For portraits 832x1216, landscape 1216x832, square 1024x1024.
-- edit_image prompt must describe the WHOLE desired result, not only the change.
+- Load the `ai-generation` skill for the full guide. Short version: English, full sentences, concrete subject, setting,
+  lighting, camera and style; any text to draw goes in quotes; aspect 9:16 for phone/portrait, 16:9 for landscape.
 
 ## Rules
 - Never overwrite the original; outputs go to the chat folder and appear in chat automatically.
-- After an AI edit, `view_image` the result and check it matches the request; if not, adjust strength/prompt once and retry.
+- After an AI edit, `view_image` the result and check it matches the request; if not, adjust the prompt once and retry.
 - Hard limits: no sexual content involving minors in any form; no sexual or degrading edits of real people.

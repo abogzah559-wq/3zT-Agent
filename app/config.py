@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "3zT-Agent"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PORT = int(os.environ.get("AGENT_PORT", "7272"))
 IS_WIN = sys.platform == "win32"
 NO_WINDOW = 0x08000000 if IS_WIN else 0
@@ -31,6 +31,8 @@ LOCAL_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "sh
 EXTRAS_VENV = LOCAL_DIR / "venv"
 EXTRAS_PY = EXTRAS_VENV / ("Scripts/python.exe" if IS_WIN else "bin/python")
 REALESRGAN_DIR = LOCAL_DIR / "tools" / "realesrgan"
+FREEVIDEO_EXE = LOCAL_DIR / "tools" / "FreeVideo.exe"     # FreeVideo launcher (image + video generation)
+DEFAULT_FREEVIDEO_HOME = str(Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share"))) / "FreeVideo")
 
 for _d in (DATA_DIR, CHATS_DIR, MEDIA_DIR):
     _d.mkdir(parents=True, exist_ok=True)
@@ -39,28 +41,31 @@ DEFAULT_WORKSPACE = str(Path.home() / "agent-workspace")
 
 AGENTS = {
     "planner": {
-        "name": "DeepSeek — المخطط",
-        "short": "المخطط",
+        "name": "DeepSeek",
+        "short": "DeepSeek",
         "kind": "deepseek",
         "role": "planner",
+        "policy": "open",
         "setting": "deepseek_model",
-        "desc": "يفكر بعمق ويرسم خطة محكمة. يقرأ ويبحث بس، ما ينفذ. سحابي وما ياخذ من كرتك شي.",
+        "desc": "الأذكى. يخطط لك إذا طلبت خطة، وينفذ بكل الأدوات إذا طلبت تنفيذ — على كيفك. سحابي وما ياخذ من كرتك شي.",
     },
     "executor": {
         "name": "Qwen 3.5 — المنفذ",
         "short": "المنفذ",
         "kind": "ollama",
         "role": "executor",
+        "policy": "safe",
         "setting": "executor_model",
-        "desc": "الرسمي من علي بابا. ينفذ بالأدوات، يتحكم بالجهاز بإذنك، ويشوف الصور والفيديو.",
+        "desc": "الرسمي من علي بابا، بقيود: ما يولّد محتوى جنسي. ينفذ بالأدوات، يتحكم بالجهاز بإذنك، ويشوف الصور والفيديو.",
     },
     "free": {
         "name": "Qwen 3.5 — بدون قيود",
         "short": "بدون قيود",
         "kind": "ollama",
         "role": "executor",
+        "policy": "open",
         "setting": "free_model",
-        "desc": "نسخة Qwen 3.5 بدون رفض (huihui-ai). نفس أدوات المنفذ، وطبقة الموافقة والحدود الأساسية شغالة.",
+        "desc": "نسخة Qwen 3.5 بدون رفض (huihui-ai). توليد صور وفيديو بدون قيود؛ تبقى بس الحدود الأساسية (القاصرين وتعديل صور ناس حقيقيين بشكل جنسي).",
     },
 }
 
@@ -73,14 +78,17 @@ DEFAULT_SETTINGS = {
     "executor_model": "qwen3.5:9b",
     "free_model": "huihui_ai/qwen3.5-abliterated:9b",
     "workspace": DEFAULT_WORKSPACE,
-    "comfy_dir": str(Path.home() / "ComfyUI"),
+    "freevideo_home": DEFAULT_FREEVIDEO_HOME,   # FreeVideo installation (token + endpoint live in <home>/agent)
+    "freevideo_url": "",                      # empty: read <home>/agent/endpoint.json, else http://127.0.0.1:8188
+    "image_model": "auto",                    # auto | minimax-h3-image | qwen-image-2.1-turbo
+    "image_loras": [],                        # [{"name": "x.safetensors", "strength": 1.0}] for the free agents
+    "stop_freevideo_on_exit": True,
     "active": "executor",
     "keep_executor_warm": True,         # keep the executor in VRAM while on DeepSeek
     "num_ctx": 32768,
     "think": True,                      # local models: think before answering (much better with tools)
     "max_steps": 40,
-    "deepseek_exec": False,             # let DeepSeek execute with tools too (smartest option)
-    "rev": 2,
+    "rev": 3,
 }
 
 _lock = threading.Lock()
@@ -97,6 +105,12 @@ def load_settings():
             pass
     if int(s.get("rev") or 1) < 2:        # v1.1: thinking on by default for local models
         s["think"], s["rev"] = True, 2
+    if int(s.get("rev") or 1) < 3:        # v1.2: FreeVideo replaces the old ComfyUI setup
+        s["rev"] = 3
+    if s.get("image_model") not in ("auto", "minimax-h3-image", "qwen-image-2.1-turbo"):
+        s["image_model"] = "auto"
+    if not isinstance(s.get("image_loras"), list):
+        s["image_loras"] = []
     if s.get("active") not in AGENTS:
         s["active"] = "executor"
     if s.get("deepseek_model") not in DEEPSEEK_MODELS:
