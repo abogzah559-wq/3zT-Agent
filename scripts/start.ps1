@@ -5,11 +5,8 @@ RefreshPath
 Set-OllamaEnv
 $url = "http://127.0.0.1:$Port"
 
-# Already running? just show a window.
-if (Up "$url/api/state") {
-  try { Invoke-WebRequest "$url/api/window" -Method Post -Headers @{ "X-3zT" = "1" } -Body "{}" -ContentType "application/json" -UseBasicParsing | Out-Null } catch {}
-  exit 0
-}
+# Already running? server.py itself asks the running copy to show its window, or replaces it when
+# that copy runs older code (after an update).
 
 # Ollama
 if (-not (Up "http://127.0.0.1:11434/api/version")) {
