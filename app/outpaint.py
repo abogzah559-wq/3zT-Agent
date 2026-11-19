@@ -10,11 +10,13 @@ How it works (all local, through FreeVideo):
    (full resolution and frame rate) and only the new border comes from the generated video.
 """
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 import freevideo
 import videotools
+from config import NO_WINDOW
 
 # generation size (multiples of 32, ~1 MP) and the aspect it stands for
 SIZES = {"21:9": (1568, 672), "16:9": (1344, 768), "9:16": (768, 1344), "1:1": (1024, 1024),
@@ -39,6 +41,63 @@ def _layout(src_w, src_h, can_w, can_h, zoom):
     h = w * src_h / src_w
     w, h = _even(w), _even(h)
     return w, h, (can_w - w) // 2 // 2 * 2, (can_h - h) // 2 // 2 * 2
+
+
+def _hist(path, box):
+    """Per-channel 256-bin histograms of a region (fractions x, y, w, h) of a picture or video frame."""
+    x, y, w, h = box
+    vf = f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f},scale=320:180"
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-vf", vf, "-f", "rawvideo",
+                        "-pix_fmt", "rgb24", "-"], capture_output=True, timeout=60, creationflags=NO_WINDOW)
+    data = r.stdout
+    if len(data) < 3000:
+        return None
+    hist = [[0] * 256 for _ in range(3)]
+    for c in range(3):
+        hc = hist[c]
+        for v in data[c::3]:
+            hc[v] += 1
+    return hist
+
+
+def _mapping(have, want):
+    """Histogram matching: for each channel, value -> value with the same rank in the wanted picture."""
+    maps = []
+    for hh, hw in zip(have, want):
+        th, tw = float(sum(hh)), float(sum(hw))
+        ch, cw, acc = [], [], 0
+        for v in hh:
+            acc += v
+            ch.append(acc / th)
+        acc = 0
+        for v in hw:
+            acc += v
+            cw.append(acc / tw)
+        m, j = [], 0
+        for i in range(256):
+            while j < 255 and cw[j] < ch[i]:
+                j += 1
+            m.append(j)
+        maps.append(m)
+    return maps
+
+
+def _clut(have, want, path):
+    """Write a Hald CLUT (level 8, PPM) that applies the histogram matching; None when it can't be measured."""
+    if not have or not want:
+        return None
+    mr, mg, mb = _mapping(have, want)
+    n = 64
+    lv = [round(i * 255 / (n - 1)) for i in range(n)]
+    rows = bytearray()
+    for b in range(n):
+        vb = mb[lv[b]]
+        for g in range(n):
+            vg = mg[lv[g]]
+            for r in range(n):
+                rows += bytes((mr[lv[r]], vg, vb))
+    Path(path).write_bytes(b"P6\n512 512\n255\n" + bytes(rows))
+    return path
 
 
 def describe(frame, progress, cancel):
@@ -101,7 +160,9 @@ def extend_video(args, src, out_dir, cancel, progress):
                        "the sharp centre is unfinished: paint it as more of the very same place, as if the camera had "
                        "pulled back. Continue every shape, wall, light, line and pattern that touches the edge of the "
                        "sharp area outward so there is no visible border, frame, seam or picture-in-picture."
-                       + scene + " Same art style, line work, colours, darkness and lighting as the centre. Do not change "
+                       + scene + " Exactly the same colour palette, hue, saturation and brightness as the centre: do not shift "
+                       "the colours, no warm, golden, orange or other tint. Same art style, line work and lighting. "
+                       "Do not change "
                        "the sharp centre. No blur, no black bars, no vignette, no extra glow or bloom, no text, "
                        "no new characters, no sky or landscape unless the centre already shows one.")
         keys = []
@@ -129,8 +190,16 @@ def extend_video(args, src, out_dir, cancel, progress):
             label_dir = work / f"k{i}"
             made = freevideo.generate_image(spec, label_dir, cancel,
                                             lambda s, i=i: progress(f"يوسّع الفريم {i + 1}/{len(times)}: {s}"))
-            key = work / f"3zt-key-{i}-{label_dir.stat().st_mtime_ns % 10**9}{made[0].suffix}"
-            shutil.copy2(made[0], key)        # unique upload names: FreeVideo stores inputs by file name
+            key = work / f"3zt-key-{i}-{label_dir.stat().st_mtime_ns % 10**9}.png"
+            # the picture model may shift the colours of the whole frame: pull them back to the original's
+            inner = (cx / gw + 0.1 * cw / gw, cy / gh + 0.1 * ch / gh, 0.8 * cw / gw, 0.8 * ch / gh)
+            clut = _clut(_hist(made[0], inner), _hist(frame, (0.1, 0.1, 0.8, 0.8)), work / f"clut{i}.ppm")
+            if clut:
+                _ff(["-i", str(made[0]), "-i", str(clut), "-filter_complex", f"[0][1]haldclut,scale={gw}:{gh}",
+                     "-frames:v", "1", str(key)], 0, progress, "يطابق الألوان")
+            else:
+                _ff(["-i", str(made[0]), "-vf", f"scale={gw}:{gh}", "-frames:v", "1", str(key)], 0, progress,
+                    "يجهّز الفريم")      # (unique names: FreeVideo stores inputs by file name)
             keys.append(key)
 
         # ---- 3: animate through the keyframes
@@ -154,6 +223,13 @@ def extend_video(args, src, out_dir, cancel, progress):
         gen = freevideo.download(url, work / "gen.mp4")
 
         # ---- 4: original back in the middle, soft edges, at the original fps
+        inner = (cx / gw + 0.1 * cw / gw, cy / gh + 0.1 * ch / gh, 0.8 * cw / gw, 0.8 * ch / gh)
+        mid = work / "mid.png"
+        _ff(["-ss", f"{dur / 2:.3f}", "-i", str(src), "-frames:v", "1", "-vf", "scale=640:-2", str(mid)], 0,
+            progress, "يقارن الألوان")
+        gmid = work / "gmid.png"
+        _ff(["-ss", f"{dur / 2:.3f}", "-i", str(gen), "-frames:v", "1", str(gmid)], 0, progress, "يقارن الألوان")
+        vclut = _clut(_hist(gmid, inner), _hist(mid, (0.1, 0.1, 0.8, 0.8)), work / "vclut.ppm")
         scale = FINAL_SHORT / min(gw, gh)
         fw, fh = _even(gw * scale), _even(gh * scale)
         ow, oh, ox, oy = _layout(info["w"], info["h"], fw, fh, zoom)
@@ -164,12 +240,13 @@ def extend_video(args, src, out_dir, cancel, progress):
              "-frames:v", "1", str(mask)], 0, progress, "يجهّز الدمج")
         fps = f"{info['fps']:.3f}"
         out = videotools._out(out_dir, src, f"extended_{aspect.replace(':', 'x')}", ".mp4")
-        graph = (f"[0:v]scale={fw}:{fh}:flags=lanczos,fps={fps},tpad=stop_mode=clone:stop_duration=2,setsar=1[bg];"
+        graph = (("[0:v][3:v]haldclut[g0];[g0]" if vclut else "[0:v]") + f"scale={fw}:{fh}:flags=lanczos,fps={fps},tpad=stop_mode=clone:stop_duration=2,setsar=1[bg];"
                  f"[1:v]scale={ow}:{oh}:flags=lanczos,fps={fps},format=yuva420p[fg0];"
                  f"[2:v]scale={ow}:{oh},format=gray[m];[fg0][m]alphamerge[fg];"
                  f"[bg][fg]overlay={ox}:{oy}:shortest=1,format=yuv420p[v]")
         audio = ["-map", "1:a?", "-c:a", "aac", "-b:a", "192k"]
-        code, log = videotools._encode(["-i", str(gen), "-i", str(src), "-loop", "1", "-i", str(mask),
+        extra = ["-i", str(vclut)] if vclut else []
+        code, log = videotools._encode(["-i", str(gen), "-i", str(src), "-loop", "1", "-i", str(mask), *extra,
                                         "-filter_complex", graph, "-map", "[v]", *audio, "-t", f"{dur:.3f}"],
                                        out, dur, progress, "يدمج الأصل مع الأطراف", crf=16)
         if code != 0 or not out.exists() or out.stat().st_size == 0:
