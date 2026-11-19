@@ -10,6 +10,8 @@ description: Edit videos - cut/trim, merge, compress for Discord/WhatsApp/TikTok
 3. Never overwrite the input. Every output gets a new name.
 4. After finishing, verify the output with `media_info` (duration/resolution as expected) and tell the user what changed in one or two lines.
 5. If one approach fails twice, switch approach; do not repeat the same failing command.
+6. "Extend / complete the sides / zoom out / make it wider or 21:9 with real content" is NOT editing: use
+   `extend_video` (see the ai-generation skill). Upscaling or resizing never adds new content.
 
 ## `video` tool operations (cheat sheet)
 | Goal | operation | key params |

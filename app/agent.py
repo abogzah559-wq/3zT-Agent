@@ -14,6 +14,7 @@ from pathlib import Path
 
 import freevideo
 import llm
+import outpaint
 import media
 import skills_mgr
 import store
@@ -216,7 +217,7 @@ def system_prompt(key, conv=None):
 - الإنترنت: web_search للبحث و fetch_url لقراءة صفحة، و download للتحميل (يدعم يوتيوب وتيك توك وإكس).
 - تعديل الفيديو: استخدم أداة video (عمليات جاهزة ومجربة: قص، ضغط، دمج، تحويل عمودي، إصلاح تشوهات وتوهج ووميض repair، رفع دقة upscale_ai...) بدل ما تكتب أوامر ffmpeg طويلة. ffmpeg الخام بس للأشياء اللي ما تغطيها.
 - تعديل الصور العادي (قص، تكبير، ألوان...): أداة image.
-- التوليد بالذكاء الاصطناعي محلي على كرت الجهاز عن طريق FreeVideo: generate_image لصورة جديدة (حتى 16 ميقا)، edit_image لتعديل أو دمج صور موجودة (صور بس، مو فيديو)، generate_video لفيديو جديد بالصوت (2-60 ثانية، تقدر تعطيه صورة أولى first_frame). الوصف بالإنجليزي ومفصّل، والكلام المنطوق بلغة صاحب الجهاز بين علامات تنصيص. التوليد ياخذ دقايق؛ لا تعيد نفس الطلب مرتين.
+- التوليد بالذكاء الاصطناعي محلي على كرت الجهاز عن طريق FreeVideo: generate_image لصورة جديدة (حتى 16 ميقا)، edit_image لتعديل أو دمج صور موجودة (صور بس، مو فيديو)، generate_video لفيديو جديد بالصوت (2-60 ثانية، تقدر تعطيه صورة أولى first_frame)، و extend_video لتوسيع فيديو موجود من الجوانب / تبعيده (يرسم أطراف جديدة حوله والأصل يبقى بالنص). رفع الدقة upscale ما يضيف أطراف. الوصف بالإنجليزي ومفصّل، والكلام المنطوق بلغة صاحب الجهاز بين علامات تنصيص. التوليد ياخذ دقايق؛ لا تعيد نفس الطلب مرتين.
 - التفريغ والترجمة transcribe، التعليق الصوتي text_to_speech، إزالة الخلفية remove_background، تكبير الصور upscale_image.
 - النتائج (صور، فيديو، صوت، ملفات) تطلع لصاحب الجهاز في الشات تلقائيًا؛ ولو تبي تعرض ملف موجود استخدم send_file.
 - إذا عرفت معلومة دايمة عن صاحب الجهاز أو تفضيلاته وطلب تحفظها، استخدم remember.
@@ -455,6 +456,9 @@ class Run:
                 freevideo.ensure_running(self.progress, self.cancel)
                 if name == "generate_video":
                     return freevideo.generate_video(args, out_dir, self.cancel, self.progress)
+                if name == "extend_video":
+                    return outpaint.extend_video(args, args["path"], chat_dir(self.conv) / "edited", self.cancel,
+                                                 self.progress)
                 return freevideo.generate_image(args, out_dir, self.cancel, self.progress, loras=loras,
                                                 model=S.get("image_model", "auto"))
             except freevideo.FVError as e:

@@ -183,6 +183,7 @@ def video(args, src, out_dir, progress, cancel, realesrgan_exe=None):
     if op not in VIDEO_OPS:
         raise ValueError(f"العملية غير معروفة. المتاح: {', '.join(VIDEO_OPS)}")
     src = Path(src)
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
     if op != "merge" and not src.is_file():
         raise FileNotFoundError(f"ما لقيت الفيديو: {src}")
     if op != "merge" and src.suffix.lower() in media.IMAGE_EXT:
@@ -397,6 +398,9 @@ def _upscale_ai(args, src, info, out_dir, progress, cancel, exe):
     model = f"realesr-animevideov3-x{scale}" if anime else "realesrgan-x4plus"
     if not anime:
         scale = 4
+    if max(info["w"], info["h"]) * scale > 7680:
+        raise ValueError(f"الفيديو دقته {info['w']}x{info['h']} عالية أصلاً؛ رفعها {scale}x يطلع أكبر من 8K. "
+                         "رفع الدقة ما يضيف أطراف ولا يصلّح شي هنا.")
     frames_total = int(info["dur"] * info["fps"])
     if frames_total > 6000:
         raise ValueError(f"الفيديو طويل ({frames_total} فريم). قصه لأقل من ~3 دقايق أول، الترقية بطيئة.")

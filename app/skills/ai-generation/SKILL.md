@@ -1,6 +1,6 @@
 ---
 name: ai-generation
-description: Generate new pictures and videos with sound locally (FreeVideo - MiniMax H3 video, H3 Image / Qwen-Image 2.1), change or combine pictures with AI, make a video from a picture, posters, thumbnails, characters, short clips, ads, memes. Arabic triggers - ولّد صورة، ارسم، سوّ صورة، صمم، ولّد فيديو، سوّ مقطع، حرّك الصورة، فيديو من صورة، عدّل الصورة بالذكاء الاصطناعي.
+description: Generate new pictures and videos with sound locally, extend/outpaint an existing video (make it wider, zoom out, fill the sides) (FreeVideo - MiniMax H3 video, H3 Image / Qwen-Image 2.1), change or combine pictures with AI, make a video from a picture, posters, thumbnails, characters, short clips, ads, memes. Arabic triggers - ولّد صورة، ارسم، سوّ صورة، صمم، ولّد فيديو، سوّ مقطع، حرّك الصورة، فيديو من صورة، عدّل الصورة بالذكاء الاصطناعي، وسّع الفيديو، كمّل الفيديو من الجوانب، خلّه أبعد، خلّه عريض.
 ---
 # AI generation (FreeVideo, runs on this PC's graphics card)
 
@@ -11,7 +11,13 @@ description: Generate new pictures and videos with sound locally (FreeVideo - Mi
 | The same picture but changed (clothes, background, style, add/remove something), or several pictures merged | `edit_image` with `images` |
 | A moving clip with sound | `generate_video` |
 | A clip that starts from (or ends on) a specific look / person / product | `generate_image` (or the user's picture) first, then `generate_video` with `first_frame` (and `last_frame`) |
+| Make an EXISTING video wider / zoomed out / "complete the sides" / 21:9 / fill black bars | `extend_video` (path, aspect, zoom 0.8 default; smaller zoom = farther away) |
 | Cut / speed / merge / subtitles / compress an existing video | NOT generation: use the `video` tool |
+
+`upscale_ai` and `resize` never add new picture content around a video. For "extend / zoom out" always use
+`extend_video`: look at one frame first (`video_frames`), describe the scene in one English sentence as
+`description`, then call it once and wait. Afterwards check a frame of the result. If the user also asks to remove
+glow/flicker, run `video` operation=repair on the result (presets dehalo, deflicker).
 
 ## Picture prompts (generate_image / edit_image)
 - Always English, full descriptive sentences: subject + appearance + clothing, action/pose, place, time and light,

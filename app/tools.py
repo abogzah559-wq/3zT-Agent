@@ -73,7 +73,7 @@ def generation_policy(name, args, policy, root):
     if policy == "safe" and sexual(prompt):
         return ("المنفذ الرسمي عليه قيود وما يولّد محتوى جنسي أو فاضح. حوّل لوكيل «بدون قيود» أو DeepSeek من فوق "
                 "إذا تبي بدون قيود.")
-    inputs = list(args.get("images") or []) + [args.get(k) for k in ("first_frame", "last_frame") if args.get(k)]
+    inputs = list(args.get("images") or []) + [args.get(k) for k in ("first_frame", "last_frame", "path") if args.get(k)]
     if sexual(prompt) and any(not generated_by_app(i, root) for i in inputs):
         return ("مرفوض: ما أسوي تعديل جنسي أو فاضح على صور حقيقية مرفوعة (ممكن تكون لناس حقيقيين). "
                 "أقدر أسويه على صور ولّدتها أنا.")
@@ -273,6 +273,14 @@ TOOLS = {
                       {"images": {"type": "array", "items": S}, "prompt": S,
                        "aspect": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"]}},
                       ["images", "prompt"]),
+    "extend_video": _fn("extend_video", "Make an EXISTING video wider / zoomed out (outpainting): the AI paints new "
+                        "surroundings around the original as if the camera pulled back, and the original stays untouched "
+                        "in the middle. Use this for: extend / complete the sides, make it 21:9 or wider, zoom out, fill "
+                        "black bars with real content. (upscale and resize do NOT add new picture content.) Up to 60 s; "
+                        "takes several minutes. Look at a frame first and write a short English description of the scene.",
+                        {"path": S, "aspect": {"type": "string", "enum": ["21:9", "16:9", "9:16", "1:1", "4:3", "3:4"]},
+                         "zoom": N, "description": S,
+                         "quality": {"type": "string", "enum": ["light", "medium", "high", "max"]}}, ["path"]),
     "generate_video": _fn("generate_video", "Generate a NEW video WITH SOUND locally (FreeVideo, MiniMax H3; 2-60 s, 24 fps). "
                           "Prompt in ENGLISH: who/what is there, the action, camera, place, sounds; spoken lines word for word "
                           "in quotes in the user's language. A short idea is fine: FreeVideo expands it. Optional first_frame/"
@@ -313,7 +321,7 @@ TOOLS = {
                     {"note": S}, ["note"]),
 }
 
-GENERATE = {"generate_image", "edit_image", "generate_video"}
+GENERATE = {"generate_image", "edit_image", "generate_video", "extend_video"}
 READ_ONLY = ["list_dir", "read_file", "search_files", "grep", "find_duplicates", "system_info", "screenshot",
              "list_windows", "web_search", "fetch_url", "view_image", "video_frames", "media_info", "load_skill"]
 CONTROL = {"mouse_click", "mouse_drag", "scroll", "type_text", "press_keys", "focus_window"}
@@ -802,6 +810,13 @@ def _execute(name, args, ctx):
                                       "أو اطلع صورة منه بـ video operation=thumbnail.", error=True)
                     if not Path(i).is_file():
                         return Result(f"خطأ: الصورة مو موجودة: {i}", error=True)
+            if name == "extend_video":
+                args["path"] = str(_p(args.get("path"), ws))
+                if not Path(args["path"]).is_file():
+                    return Result(f"خطأ: الفيديو مو موجود: {args['path']}", error=True)
+                if Path(args["path"]).suffix.lower() not in media.VIDEO_EXT:
+                    return Result("خطأ: extend_video للفيديو بس.", error=True)
+                args["prompt"] = args.get("description", "")
             for k in ("first_frame", "last_frame"):
                 if args.get(k):
                     args[k] = str(_p(args[k], ws))
@@ -812,7 +827,7 @@ def _execute(name, args, ctx):
                 return Result(reason, error=True)
             files = ctx["generate"](name, args)
             imgs = []
-            if name != "generate_video":
+            if name not in ("generate_video", "extend_video"):
                 for f in files[:4]:
                     jpg, _, _ = media.to_jpeg(f, 768)
                     if jpg:
