@@ -517,7 +517,7 @@ def run_agent(run: Run):
         budget = max(budget, 12_000)
         max_steps = int(S.get("max_steps") or 40)
         fails, repeats, last_sig, stop_tools = {}, 0, None, False
-        nudges, empties = 0, 0
+        nudges, empties, bad_calls = 0, 0, 0
 
         step = 0
         while step <= max_steps:
@@ -579,6 +579,16 @@ def run_agent(run: Run):
                     run.emit("drop_assistant")
             store.save(conv)
             if err:
+                low = err.lower()
+                if (kind == "ollama" and bad_calls < 2 and not run.cancel.is_set()
+                        and any(k in low for k in ("xml syntax", "parsing tool call", "tool call", "unexpected end",
+                                                   "invalid character", "unmarshal"))):
+                    bad_calls += 1            # the model wrote a broken tool call: tell it and try again
+                    _phase(run, "النموذج كتب أداة غلط — يعيد المحاولة")
+                    run.add({"role": "user", "internal": True,
+                             "content": "(تنبيه من النظام: آخر استدعاء أداة كتبته كان مكسور وما تنفذ. أعد استدعاء الأداة "
+                                        "الصحيحة بمدخلات JSON سليمة، بدون أي XML أو نص داخل الاستدعاء.)"})
+                    continue
                 run.notice(err + " — أعد المحاولة بزر ↻ تحت.")
                 return
             if run.cancel.is_set():
