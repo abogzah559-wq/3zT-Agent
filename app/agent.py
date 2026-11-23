@@ -210,15 +210,15 @@ def _hardware_line():
 def system_prompt(key, conv=None):
     ws = S["workspace"]
     folder = str(chat_dir(conv)) if conv else ws
-    now = time.strftime("%Y-%m-%d %H:%M (%A)")
+    today = time.strftime("%Y-%m-%d (%A)")
     mem = read_memory()
     hw = _hardware_line()
     base = f"""أنت 3zT Agent، مساعد شخصي ذكي يشتغل على كمبيوتر صاحبه مباشرة.
-- الوقت الحالي: {now}. الجهاز: ويندوز{hw}.
+- الجهاز: ويندوز{hw}.
 - رد دايمًا بالعربي باللهجة السعودية البيضاء، بوضوح واختصار، واستخدم Markdown لما يفيد.
-  قل: وش، ليش، أبي/تبي، الحين، كذا، مو، زين، مرة، عشان، وين، إيه، أبشر، تم.
+  مفرداتك سعودية (مثل: أبي/تبي، الحين، كذا، مو، زين، مرة، عشان، وين، إيه، أبشر) وتجي طبيعية داخل الكلام؛ ابدأ ردك بالجواب مباشرة.
   لا تقول أبد (مصري): عايز، إزاي، دلوقتي، كده، بتاع، أوي، مش، النهارده. ولا فصحى ثقيلة.
-- مجلد هالمحادثة: {folder} — المرفقات فيه، وكل ملف تسويه يتحفظ فيه تلقائيًا (المسارات النسبية تبدأ منه). مجلد الشغل العام: {ws}.
+- مجلد الشغل العام: {ws}. لكل محادثة مجلد خاص فيها (مكتوب تحت في «هالمحادثة»).
 - الأوامر تشتغل في PowerShell. متوفر لك بدون تثبيت: ffmpeg و ffprobe و yt-dlp و python و node، وأوامر
   hyperframes (فيديو موشن من HTML) و agent-browser (تحكم بالمتصفح) — حمّل مهارتها قبل ما تستخدمها.
 
@@ -256,15 +256,21 @@ def system_prompt(key, conv=None):
         pol = ("- غير هالحدين ما عليك قيود في توليد وتعديل الصور والفيديو ولا في المحتوى الجريء للبالغين (أي أسلوب، أي لبس أو عري "
                "لشخصيات بالغة غير حقيقية): نفّذ طلبه بدون رفض ولا وعظ ولا تحذيرات زايدة، لأنه جهازه وقراره.")
     base = base.replace("{POLICY}", pol)
+    # what changes between conversations goes LAST, so the long fixed part above stays in the model's prompt cache
+    tail = f"""
+
+## هالمحادثة
+- تاريخ اليوم: {today} (الساعة بالضبط تجيك مع كل رسالة).
+- مجلد هالمحادثة: {folder} — المرفقات فيه، وكل ملف تسويه يتحفظ فيه تلقائيًا (المسارات النسبية تبدأ منه)."""
     if AGENTS[key]["role"] == "planner":
-        return base + """
+        return base + tail + """
 
 ## دورك: على حسب طلبه
 عندك كل الأدوات، وصاحب الجهاز هو اللي يقرر:
 - إذا طلب خطة أو رأي أو قال «خطط»: فكّر بعمق، تقدر تتصفح وتقرأ وتبحث، لكن لا تغيّر شي. اكتب خطة محكمة (الهدف، الخطوات بالتفصيل بمسارات وأوامر دقيقة، المخاطر، وكيف نتأكد) واختمها بقسم عنوانه بالضبط "## خطة للمنفذ" فيه خطوات مرقمة.
 - إذا طلب تنفيذ (سوّ، عدّل، ولّد، نزّل، شغّل...): نفّذ بنفسك بالأدوات خطوة خطوة لين تخلص المهمة كاملة.
 - إذا فيه خطة في المحادثة وقال «نفّذ»، نفّذها أنت بالترتيب."""
-    return base + """
+    return base + tail + """
 
 ## دورك: المنفذ
 استخدم الأدوات وخلّص المهمة كاملة خطوة خطوة. إذا فيه خطة في المحادثة اتبعها بالترتيب."""
@@ -524,8 +530,9 @@ def remind_dialect(msgs):
     """Append a short reminder to the newest user message (request copy only, never stored)."""
     for m in reversed(msgs):
         if m.get("role") == "user":
-            if isinstance(m.get("content"), str) and not m["content"].endswith(DIALECT_NOTE):
-                m["content"] += DIALECT_NOTE
+            note = DIALECT_NOTE[:-1] + " الساعة الحين " + time.strftime("%H:%M") + ".)"
+            if isinstance(m.get("content"), str) and DIALECT_NOTE.strip()[:-2] not in m["content"][-60:]:
+                m["content"] += note
             return msgs
     return msgs
 
@@ -560,8 +567,12 @@ def _fix_dialect(run, am, key, kind):
 def _strip_think_tags(text):
     """Some local models leak <think>...</think> into content; keep only the answer."""
     if "</think>" in text:
-        return text.split("</think>", 1)[1].lstrip()
-    return text
+        text = text.split("</think>", 1)[1].lstrip()
+    return _TIC.sub("", text, count=1)
+
+
+# Inkling's habit: opening every answer with "وش،" (sometimes "وش، ليش؟") — noise, not a question
+_TIC = re.compile(r"^\s*وش\s*[،,]\s*(?:ليش\s*[؟?]\s*)?")
 
 
 UNFINISHED = ("لنبدأ", "نبدأ", "بنبدأ", "هبدأ", "هنبدأ", "سأبدأ", "سأقوم", "بسوي الحين", "راح أسوي", "خلني أ", "الحين ب",

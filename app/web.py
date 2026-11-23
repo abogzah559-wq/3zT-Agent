@@ -1,4 +1,5 @@
 """Web access without API keys: search (DuckDuckGo HTML, Bing fallback) and page reading."""
+import base64
 import gzip
 import html
 import re
@@ -31,45 +32,95 @@ def _clean(s):
     return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", s)).split())
 
 
-def search(query, count=8):
-    results = []
+def _bing_url(url):
+    """Bing wraps results in /ck/a?...&u=a1<base64url>; return the real address."""
+    if "bing.com/ck/a" not in url:
+        return url
     try:
-        raw, _, cs, _ = _fetch("https://html.duckduckgo.com/html/",
-                               urllib.parse.urlencode({"q": query, "kl": "wt-wt"}).encode())
-        page = raw.decode(cs, errors="replace")
-        blocks = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="result__a"|$)',
-                            page, re.S)
-        for href, title, rest in blocks:
-            m = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
-            url = html.unescape(href)
-            if "uddg=" in url:
-                url = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["uddg"][0])
-            if url.startswith("//"):
-                url = "https:" + url
-            if "duckduckgo.com/y.js" in url:      # ads
-                continue
-            results.append({"title": _clean(title), "url": url, "snippet": _clean(m.group(1)) if m else ""})
-            if len(results) >= count:
-                break
+        u = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("u", [""])[0]
+        if u.startswith("a1"):
+            b = u[2:]
+            return base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)).decode("utf-8", "replace")
     except Exception:
         pass
+    return url
+
+
+def _ddg(page, count):
+    out = []
+    blocks = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?=<a[^>]+class="result__a"|$)',
+                        page, re.S)
+    for href, title, rest in blocks:
+        m = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
+        out.append((href, title, m.group(1) if m else ""))
+    if not out:     # lite layout
+        for href, title in re.findall(r"<a[^>]+href=\"([^\"]+)\"[^>]+class=['\"]result-link['\"][^>]*>(.*?)</a>", page, re.S):
+            out.append((href, title, ""))
+        snips = re.findall(r"class=['\"]result-snippet['\"][^>]*>(.*?)</td>", page, re.S)
+        out = [(h, t, snips[i] if i < len(snips) else "") for i, (h, t, _) in enumerate(out)]
+    res = []
+    for href, title, snip in out:
+        url = html.unescape(href)
+        if "uddg=" in url:
+            url = urllib.parse.unquote(urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["uddg"][0])
+        if url.startswith("//"):
+            url = "https:" + url
+        if "duckduckgo.com/y.js" in url or not url.startswith("http"):      # ads
+            continue
+        res.append({"title": _clean(title), "url": url, "snippet": _clean(snip)})
+        if len(res) >= count:
+            break
+    return res
+
+
+def _words(text):
+    return {w for w in re.findall(r"[\w\u0600-\u06FF]{3,}", text.lower())}
+
+
+def _relevant(results, query):
+    """Drop results that share no word with the query (spam a search engine sometimes serves to bots)."""
+    q = _words(query)
+    if not q:
+        return results
+    keep = [r for r in results if q & _words(r["title"] + " " + r["snippet"] + " " + r["url"])]
+    return keep
+
+
+def search(query, count=8):
+    results, err = [], None
+    ascii_q = all(ord(c) < 128 for c in query)
+    for url, data in (("https://html.duckduckgo.com/html/", {"q": query, "kl": "wt-wt"}),
+                      ("https://lite.duckduckgo.com/lite/", {"q": query, "kl": "wt-wt"})):
+        try:
+            raw, _, cs, _ = _fetch(url, urllib.parse.urlencode(data).encode())
+            results = _relevant(_ddg(raw.decode(cs, errors="replace"), count), query)
+        except Exception as e:
+            err = e
+        if results:
+            break
     if not results:
         try:
-            raw, _, cs, _ = _fetch("https://www.bing.com/search?" + urllib.parse.urlencode({"q": query, "count": count}))
+            q = {"q": query, "count": count}
+            if ascii_q:
+                q.update(setlang="en", mkt="en-US")
+            raw, _, cs, _ = _fetch("https://www.bing.com/search?" + urllib.parse.urlencode(q))
             page = raw.decode(cs, errors="replace")
             for li in re.findall(r'<li class="b_algo".*?</li>', page, re.S):
                 a = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', li, re.S)
                 if not a:
                     continue
                 p = re.search(r"<p[^>]*>(.*?)</p>", li, re.S)
-                results.append({"title": _clean(a.group(2)), "url": html.unescape(a.group(1)),
+                results.append({"title": _clean(a.group(2)), "url": _bing_url(html.unescape(a.group(1))),
                                 "snippet": _clean(p.group(1)) if p else ""})
                 if len(results) >= count:
                     break
+            results = _relevant(results, query)
         except Exception as e:
-            return f"خطأ: البحث ما اشتغل ({e})"
+            err = e
     if not results:
-        return "ما لقيت نتائج."
+        if err:
+            return f"خطأ: البحث ما اشتغل ({err}). جرّب fetch_url على موقع رسمي مباشرة."
+        return "ما لقيت نتائج مفيدة. جرّب كلمات ثانية أو fetch_url على موقع رسمي مباشرة."
     return "\n\n".join(f"[{i}] {r['title']}\n{r['url']}\n{r['snippet']}" for i, r in enumerate(results, 1))
 
 
