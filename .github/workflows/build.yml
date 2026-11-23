@@ -45,7 +45,8 @@ jobs:
           & "$rt/bin/ffmpeg.exe" -hide_banner -version | Select-Object -First 1
           & "$rt/bin/yt-dlp.exe" --version
           & "$rt/node/node.exe" --version
-          & "$rt/node/node_modules/.bin/hyperframes.cmd" --version
+          & "$rt/node-packages/node_modules/.bin/hyperframes.cmd" --version
+          & "$rt/node-packages/node_modules/.bin/agent-browser.cmd" --version
           $srv = Get-ChildItem $rt/llama -Recurse -Filter llama-server.exe | Select-Object -First 1
           & $srv.FullName --version
           & "$rt/python/python.exe" -c "import sys; sys.path.insert(0, 'app'); import config, localai, setup_jobs, skills_mgr; print(len(skills_mgr.all_skills()), 'skills'); print('server', localai.server_exe())"

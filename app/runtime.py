@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from config import GPU_LIBS_DIR, IS_WIN, NODE_DIR, RUNTIME_DIR
+from config import GPU_LIBS_DIR, IS_WIN, NODE_DIR, NODE_PKG_DIR, RUNTIME_DIR
 
 
 def browser_exe():
@@ -26,11 +26,11 @@ def browser_exe():
 
 def setup():
     dirs = [RUNTIME_DIR / "bin", RUNTIME_DIR / "python", RUNTIME_DIR / "python" / "Scripts",
-            NODE_DIR, NODE_DIR / "node_modules" / ".bin"]
+            NODE_DIR, NODE_PKG_DIR / "node_modules" / ".bin"]
     have = [str(d) for d in dirs if d.exists()]
     if have:
         os.environ["PATH"] = os.pathsep.join(have + [os.environ.get("PATH", "")])
-    mods = NODE_DIR / "node_modules"
+    mods = NODE_PKG_DIR / "node_modules"
     if mods.exists():
         os.environ["NODE_PATH"] = os.pathsep.join([str(mods)] + ([os.environ["NODE_PATH"]] if os.environ.get("NODE_PATH") else []))
     os.environ["AGENT_GPU_LIBS"] = str(GPU_LIBS_DIR)    # CUDA libraries for faster-whisper (media worker)

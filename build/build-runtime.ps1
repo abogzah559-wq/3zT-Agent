@@ -49,10 +49,14 @@ Move-Item (Get-ChildItem "$Tmp\node" -Directory | Select-Object -First 1).FullNa
 $env:Path = "$Rt\node;" + $env:Path
 $env:PUPPETEER_SKIP_DOWNLOAD = "1"
 $env:HYPERFRAMES_NO_TELEMETRY = "1"
-& "$Rt\node\npm.cmd" install --prefix "$Rt\node" --no-audit --no-fund docx pptxgenjs hyperframes agent-browser
+# packages live in their own folder: installing into node\node_modules would prune npm itself
+$pk = "$Rt\node-packages"
+New-Item -ItemType Directory -Force -Path $pk | Out-Null
+Set-Content -Path "$pk\package.json" -Value '{"name":"3zt-agent-runtime","private":true}' -Encoding ascii
+& "$Rt\node\npm.cmd" install --prefix $pk --no-audit --no-fund docx pptxgenjs hyperframes agent-browser
 if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-if (-not (Test-Path "$Rt\node\node_modules\.bin\hyperframes.cmd")) { throw "hyperframes CLI missing" }
-if (-not (Test-Path "$Rt\node\node_modules\.bin\agent-browser.cmd")) { throw "agent-browser CLI missing" }
+if (-not (Test-Path "$pk\node_modules\.bin\hyperframes.cmd")) { throw "hyperframes CLI missing" }
+if (-not (Test-Path "$pk\node_modules\.bin\agent-browser.cmd")) { throw "agent-browser CLI missing" }
 
 # ---- llama.cpp (CUDA 12 build + its CUDA runtime DLLs) ----
 New-Item -ItemType Directory -Force -Path "$Rt\llama" | Out-Null

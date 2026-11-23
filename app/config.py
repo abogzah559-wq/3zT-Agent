@@ -36,6 +36,7 @@ GPU_LIBS_DIR = LOCAL_DIR / "gpu-libs"         # CUDA libraries for faster-whispe
 RUNTIME_DIR = Path(os.environ.get("AGENT_RUNTIME_DIR") or ROOT.parent / "runtime")
 BUNDLED_PY = RUNTIME_DIR / "python" / ("python.exe" if IS_WIN else "bin/python3")
 NODE_DIR = RUNTIME_DIR / "node"
+NODE_PKG_DIR = RUNTIME_DIR / "node-packages"     # docx, pptxgenjs, hyperframes, agent-browser
 _OLD_VENV_PY = LOCAL_DIR / "venv" / ("Scripts/python.exe" if IS_WIN else "bin/python")    # v1.x extras
 EXTRAS_PY = BUNDLED_PY if BUNDLED_PY.exists() else _OLD_VENV_PY
 REALESRGAN_DIR = RUNTIME_DIR / "realesrgan" if (RUNTIME_DIR / "realesrgan").exists() else LOCAL_DIR / "tools" / "realesrgan"
