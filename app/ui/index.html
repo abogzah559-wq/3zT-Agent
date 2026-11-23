@@ -14,7 +14,7 @@
     <div class="brand">
       <div class="logo">3zT</div>
       <div class="nm">3zT Agent</div>
-      <div class="ver" id="ver">v1.0</div>
+      <div class="ver" id="ver">v2.0</div>
     </div>
     <button class="newchat" id="newChat"><svg class="i" data-i="plus"></svg>محادثة جديدة <kbd>Ctrl N</kbd></button>
     <div class="search"><svg class="i sm" data-i="search"></svg><input id="q" placeholder="ابحث في المحادثات"></div>
@@ -72,6 +72,7 @@
     <div class="ch"><svg class="i" data-i="settings"></svg><h3>الإعدادات</h3><button class="icon-btn" data-close><svg class="i" data-i="x"></svg></button></div>
     <div class="cb">
       <div class="tabs" id="tabs">
+        <button class="tab" data-tab="setup"><svg class="i sm" data-i="download"></svg>الإعداد والتحميلات</button>
         <button class="tab on" data-tab="ds"><svg class="i sm" data-i="cloud"></svg>DeepSeek</button>
         <button class="tab" data-tab="local"><svg class="i sm" data-i="chip"></svg>النماذج المحلية</button>
         <button class="tab" data-tab="gen"><svg class="i sm" data-i="wand"></svg>التوليد</button>
@@ -81,6 +82,11 @@
         <button class="tab" data-tab="health"><svg class="i sm" data-i="pulse"></svg>حالة الجهاز</button>
       </div>
       <div class="panes">
+        <div class="pane" data-pane="setup">
+          <div class="fld"><label>اللي يحتاجه البرنامج</label>
+            <div class="help">كل شي ينزل من هنا مرة وحدة، وتقدر تكمّل استخدام البرنامج وهو ينزل. لو انقطع النت، اضغط تحميل مرة ثانية ويكمّل من مكانه.</div></div>
+          <div class="setup" id="setupList"></div>
+        </div>
         <div class="pane on" data-pane="ds">
           <div class="fld"><label>مفتاح DeepSeek API</label>
             <div class="inrow"><input class="inp ltr" type="password" id="sKey" placeholder="sk-..." autocomplete="off"><button class="btn soft" id="sKeyTest">اختبار</button></div>
@@ -93,11 +99,16 @@
           <div class="fld"><div class="help">DeepSeek عنده كل الأدوات: قل له «خطط» ويكتب خطة، أو قل له «سوّ» وينفّذ بنفسه — على كيفك. الموافقات على الحذف والأوامر شغالة.</div></div>
         </div>
         <div class="pane" data-pane="local">
-          <div class="fld"><label>نموذج المنفذ (Ollama)</label><input class="inp ltr" id="sExec"></div>
-          <div class="fld"><label>نموذج بدون قيود (Ollama)</label><input class="inp ltr" id="sFree">
-            <div class="help">لو النموذج مو منزّل، البرنامج ينزّله تلقائيًا أول ما تستخدمه وتشوف التقدم.</div></div>
+          <div class="fld"><label>نموذج المنفذ</label><select class="inp" id="sExec"></select></div>
+          <div class="fld"><label>نموذج بدون قيود</label><select class="inp" id="sFree"></select></div>
+          <div class="fld"><label>نسخة «بدون قيود»</label><select class="inp" id="sFreeVar">
+            <option value="auto">تلقائي — الجودة الأعلى لو الرام تكفي، وإلا السريعة</option>
+            <option value="fast">السريعة — كاملة في كرت الشاشة (الأسرع، ما تلمس الرام)</option>
+            <option value="quality">الأعلى جودة — جزء منها بالرام (أبطأ شوي)</option></select>
+            <div class="help">البرنامج يخلي دايمًا 4GB رام فاضية للويندوز. لو النسخة الأعلى جودة ما ركبت أو طلّعت كلام غريب، يرجع للسريعة تلقائيًا. النماذج الناقصة تنزل من «الإعداد والتحميلات» أو أول ما تستخدمها.</div></div>
           <div class="fld"><label>حجم الذاكرة (السياق)</label><select class="inp" id="sCtx">
-            <option value="8192">8K — أخف شي</option><option value="16384">16K</option><option value="32768">32K — موصى به لكرتك</option><option value="65536">64K — محادثات طويلة جدًا</option></select></div>
+            <option value="8192">8K — أخف شي</option><option value="16384">16K</option><option value="32768">32K — موصى به</option><option value="65536">64K — محادثات طويلة جدًا</option></select>
+            <div class="help">هذا الحد الأعلى؛ كل نموذج عنده حد خاص يناسب ذاكرة كرتك (Inkling: 16K).</div></div>
           <div class="fld"><label>أقصى عدد خطوات للمهمة الوحدة</label><input class="inp ltr" id="sSteps" type="number" min="5" max="150"></div>
           <div class="fld"><div class="swrow" id="sWarmRow"><div class="sw" id="sWarm"></div>خلّ المنفذ جاهز في الكرت وأنا على DeepSeek (رجعة فورية + يعطي DeepSeek عيون)</div></div>
         </div>
@@ -110,7 +121,7 @@
           <div class="fld"><label>FreeVideo — توليد الصور والفيديو محليًا</label>
             <div class="health" id="fvBox"></div>
             <div class="inrow" style="margin-top:8px"><button class="btn soft" id="fvStart"><svg class="i sm" data-i="rocket"></svg>شغّل FreeVideo الحين</button></div>
-            <div class="help">MiniMax H3 للفيديو بالصوت، و H3 Image / Qwen-Image 2.1 للصور. البرنامج يشغّله لحاله وقت التوليد. ما هو مثبت؟ شغّل install-freevideo.bat</div></div>
+            <div class="help">MiniMax H3 للفيديو بالصوت، و H3 Image / Qwen-Image 2.1 للصور. البرنامج يشغّله لحاله وقت التوليد. ما هو مثبت؟ ثبّته من تبويب «الإعداد والتحميلات».</div></div>
           <div class="fld"><label>نموذج الصور</label><select class="inp" id="sImgModel">
             <option value="auto">تلقائي (المثبت في FreeVideo)</option><option value="minimax-h3-image">MiniMax H3 Image (حتى 16 ميقا)</option><option value="qwen-image-2.1-turbo">Qwen-Image 2.1 Turbo (أسرع)</option></select></div>
           <div class="fld"><label>LoRA للوكلاء بدون قيود (DeepSeek و «بدون قيود»)</label>

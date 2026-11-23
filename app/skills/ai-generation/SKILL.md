@@ -39,7 +39,8 @@ glow/flicker, run `video` operation=repair on the result (presets dehalo, deflic
 ## After generating
 - The files appear in the chat automatically. Look at a picture with `view_image` (or a video with `video_frames`)
   before saying it is good; if it missed the request, fix the prompt once and retry.
-- If the tool says FreeVideo is not installed: tell the user to run `install-freevideo.bat` once.
+- If the tool says FreeVideo is not installed: tell the user to install it once from Settings → «الإعداد والتحميلات».
+- For pro results load `image-director` (pictures) or `video-director` (finished videos with several shots).
 
 ## Limits (all agents)
 - Nothing sexual involving minors, in any form.

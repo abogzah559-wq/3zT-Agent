@@ -120,7 +120,7 @@ def installed():
 def _request(method, path, body=None, *, timeout=60, raw=False):
     token = _token()
     if not token:
-        raise FVError("FreeVideo مو مثبت أو ما اكتمل تثبيته. شغّل install-freevideo.bat مرة وحدة.")
+        raise FVError("FreeVideo مو مثبت أو ما اكتمل تثبيته. ثبّته مرة وحدة من الإعدادات ← «الإعداد والتحميلات».")
     data = None if body is None else json.dumps(body).encode()
     headers = {"Authorization": "Bearer " + token, "X-FreeVideo-Client": "3zT-Agent"}
     if data is not None:
@@ -204,9 +204,9 @@ def ensure_running(progress, cancel, timeout=900):
         raise FVError("FreeVideo شغال بس مو جاهز: " + str(s.get("problem") or "افتح نافذة FreeVideo وكمّل التثبيت"))
     exe = launcher()
     if not installed() and not exe:
-        raise FVError("FreeVideo مو مثبت. شغّل install-freevideo.bat (يحمّل ويثبت كل شي) ثم جرّب مرة ثانية.")
+        raise FVError("FreeVideo مو مثبت. ثبّته من الإعدادات ← «الإعداد والتحميلات» ثم جرّب مرة ثانية.")
     if not exe:
-        raise FVError("ما لقيت FreeVideo.exe. شغّل install-freevideo.bat عشان يرجع يحمّله.")
+        raise FVError("ما لقيت FreeVideo.exe. نزّله من الإعدادات ← «الإعداد والتحميلات».")
     proc = STARTED["proc"]
     if proc is None or proc.poll() is not None:
         progress("أشغّل FreeVideo...")

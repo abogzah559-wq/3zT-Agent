@@ -1,6 +1,6 @@
 "use strict";
 /* 3zT Agent UI — no frameworks, no build step. */
-const UI_VERSION = "1.2.0";
+const UI_VERSION = "2.0.0";
 
 // ================= icons =================
 const ICONS = {
@@ -50,6 +50,11 @@ function hydrateIcons(root = document) {
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+// Text direction: any Arabic letter makes the block right-to-left (English words inside keep their order);
+// pure Latin text is left-to-right. Neutral-only text follows the page (RTL).
+const AR_RE = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+const dirOf = t => AR_RE.test(t || "") ? "rtl" : /[A-Za-z\u00C0-\u024F]/.test(t || "") ? "ltr" : "rtl";
+const dirAttr = t => ` dir="${dirOf(t)}"`;
 const fmtSize = n => n < 1024 ? n + " B" : n < 1 << 20 ? (n / 1024).toFixed(0) + " KB" : n < 1 << 30 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
 const mediaUrl = p => "/media?p=" + encodeURIComponent(p);
 const store = {
@@ -122,19 +127,19 @@ function md(src, streaming = false) {
     }
     if (/^\s*$/.test(ln)) { closeLists(); i++; continue; }
     const h = ln.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { closeLists(); out += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; i++; continue; }
+    if (h) { closeLists(); out += `<h${h[1].length}${dirAttr(h[2])}>${inline(h[2])}</h${h[1].length}>`; i++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(ln)) { closeLists(); out += "<hr>"; i++; continue; }
     if (/^\s*>/.test(ln)) {
       closeLists(); const q = [];
       while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ""));
-      out += `<blockquote>${md(q.join("\n"))}</blockquote>`; continue;
+      out += `<blockquote${dirAttr(q.join(" "))}>${md(q.join("\n"))}</blockquote>`; continue;
     }
     if (/^\s*\|.*\|\s*$/.test(ln) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])) {
       closeLists();
       const cells = r => r.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
       const head = cells(ln); i += 2;
-      let t = "<table><thead><tr>" + head.map(c => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>";
-      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) t += "<tr>" + cells(lines[i++]).map(c => `<td>${inline(c)}</td>`).join("") + "</tr>";
+      let t = `<table${dirAttr(head.join(" "))}><thead><tr>` + head.map(c => `<th${dirAttr(c)}>${inline(c)}</th>`).join("") + "</tr></thead><tbody>";
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) t += "<tr>" + cells(lines[i++]).map(c => `<td${dirAttr(c)}>${inline(c)}</td>`).join("") + "</tr>";
       out += t + "</tbody></table>"; continue;
     }
     const li = ln.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
@@ -142,14 +147,14 @@ function md(src, streaming = false) {
       const depth = Math.min(3, Math.floor(li[1].replace(/\t/g, "    ").length / 2) + 1);
       const type = /\d/.test(li[2]) ? "ol" : "ul";
       while (listStack.length > depth) out += `</${listStack.pop().t}>`;
-      while (listStack.length < depth) { listStack.push({t: type}); out += `<${type}>`; }
-      if (listStack[listStack.length - 1].t !== type) { out += `</${listStack.pop().t}><${type}>`; listStack.push({t: type}); }
-      out += `<li>${inline(li[3])}</li>`; i++; continue;
+      while (listStack.length < depth) { listStack.push({t: type}); out += `<${type}${dirAttr(li[3])}>`; }
+      if (listStack[listStack.length - 1].t !== type) { out += `</${listStack.pop().t}><${type}${dirAttr(li[3])}>`; listStack.push({t: type}); }
+      out += `<li${dirAttr(li[3])}>${inline(li[3])}</li>`; i++; continue;
     }
     closeLists();
     const para = [ln]; i++;
     while (i < lines.length && lines[i].trim() && !/^(\s*(```|~~~)|#{1,4}\s|\s*>|\s*([-*+]|\d+[.)])\s|\s*\|.*\|\s*$)/.test(lines[i])) para.push(lines[i++]);
-    out += `<p>${para.map(inline).join("<br>")}</p>`;
+    out += `<p${dirAttr(para.join(" "))}>${para.map(inline).join("<br>")}</p>`;
   }
   closeLists();
   return out;
@@ -181,7 +186,9 @@ const TOOL_META = {
   ffmpeg: ["video", "ffmpeg"], transcribe: ["mic", "يفرّغ الكلام"], text_to_speech: ["music", "يسوي صوت"],
   remove_background: ["wand", "يشيل الخلفية"], upscale_image: ["wand", "يكبّر الصورة"],
   generate_image: ["sparkle", "يولّد صورة"], edit_image: ["sparkle", "يعدّل صورة"], generate_video: ["video", "يولّد فيديو"],
-  remember: ["bookmark", "يحفظ ملاحظة"],
+  remember: ["bookmark", "يحفظ ملاحظة"], extend_video: ["video", "يوسّع الفيديو"], video: ["video", "يعدّل فيديو"],
+  image: ["image", "يعدّل صورة"], send_file: ["file", "يرسل ملف"], load_skill: ["sparkle", "يحمّل مهارة"],
+  install_skill: ["download", "يثبت مهارة"],
 };
 const ST_LABEL = {off: "مطفي", loading: "يتحمّل…", pulling: "ينزل…", ready: "جاهز", cloud: "جاهز", nokey: "يحتاج مفتاح", missing: "مو منزّل"};
 function argPreview(name, a) {
@@ -217,7 +224,7 @@ function renderUser(t) {
     d.appendChild(a);
   }
   const text = m.display !== undefined ? m.display : m.content;
-  if (text) { const b = document.createElement("div"); b.className = "bubble"; b.textContent = text; d.appendChild(b); }
+  if (text) { const b = document.createElement("div"); b.className = "bubble"; b.dir = dirOf(text); b.textContent = text; d.appendChild(b); }
   return d;
 }
 
@@ -236,7 +243,7 @@ function renderAI(t, isLive) {
   const firstA = msgs.find(m => m.role === "assistant");
   const agentKey = (firstA && firstA.agent) || (cur && cur.agent) || active;
   const ag = S && S.agents[agentKey] ? S.agents[agentKey] : {short: agentKey};
-  d.insertAdjacentHTML("beforeend", `<div class="who"><span class="av ${agentKey}">${agentKey === "planner" ? "DS" : "Q"}</span>${esc(ag.name || ag.short)}</div>`);
+  d.insertAdjacentHTML("beforeend", `<div class="who"><span class="av ${agentKey}">${{planner: "DS", executor: "Q", free: "IN"}[agentKey] || "AI"}</span>${esc(ag.name || ag.short)}</div>`);
 
   const results = {};
   msgs.forEach(m => { if (m.role === "tool") results[m.tool_call_id] = m; });
@@ -249,7 +256,7 @@ function renderAI(t, isLive) {
   const thinkingNow = isLive && lastA && lastA.reasoning && !lastA.content && !(lastA.tool_calls || []).length;
   if (thinking) {
     const head = thinkingNow ? `<i class="spin"></i>يفكر…` : `${icon("brain", "sm")}فكّر <span class="sub">· ${thinking.length.toLocaleString("ar")} حرف</span>`;
-    d.appendChild(foldEl(`${cur.id}:${t.idx}:think`, "think", head, esc(thinking), false));
+    d.appendChild(foldEl(`${cur.id}:${t.idx}:think`, "think", head, `<div${dirAttr(thinking.slice(0, 400))}>${esc(thinking)}</div>`, false));
   }
 
   // steps
@@ -616,7 +623,7 @@ function renderAgents() {
     b.onclick = () => switchTo(k);
     box.appendChild(b);
   }
-  $("#think").style.display = S.agents[active].kind === "ollama" ? "" : "none";
+  $("#think").style.display = S.agents[active].kind === "local" ? "" : "none";
   const st = S.status[active];
   if (!(live && !live.done)) $("#hint").textContent = st === "loading" ? "يتحمّل في الكرت…" : st === "pulling" ? "ينزّل النموذج…" : "";
 }
@@ -624,7 +631,7 @@ async function switchTo(k) {
   if (k === active) return;
   if (live && !live.done) { toast("انتظر المهمة تخلص أو وقفها", true); return; }
   active = k;
-  if (S && S.agents[k].kind === "ollama" && S.status[k] !== "ready") S.status[k] = "loading";
+  if (S && S.agents[k].kind === "local" && S.status[k] !== "ready") S.status[k] = "loading";
   renderAgents(); if (!cur || !cur.messages.length) renderThread();
   try { await api("/api/switch", {agent: k}); } catch (e) { toast(e.message, true); }
   pollState();
@@ -652,9 +659,13 @@ function banner() {
   const pulls = Object.values(S.pull || {});
   if (pulls.length) return showBanner("warn", pulls[0].text + ` (${pulls[0].pct}%)`);
   if (S.version !== UI_VERSION) return showBanner("warn", "البرنامج تحدّث — سكّره وافتحه من جديد.");
-  if (a.kind === "ollama" && !S.ollama) return showBanner("err", "Ollama مو شغال. سكّر البرنامج وافتحه من الاختصار، أو شغّل Ollama يدويًا.");
+  const su = S.setup || {missing: [], running: []};
+  if (su.missing.length && !su.seen) return showBanner("warn", "أول مرة؟ نزّل النماذج المحلية مرة وحدة (تقدر تستخدم DeepSeek وهي تنزل).", "افتح الإعداد", () => openSettings("setup"));
   if (a.kind === "deepseek" && !S.settings.has_key) return showBanner("warn", "حط مفتاح DeepSeek عشان يشتغل.", "افتح الإعدادات", () => openSettings("ds"));
-  if (S.status[active] === "missing") return showBanner("warn", `النموذج ${a.model} مو منزّل — بينزل تلقائيًا أول ما ترسل (حوالي 6.6GB).`);
+  if (S.status[active] === "missing") {
+    const m = S.models[S.settings[a.setting]] || {gb: {}};
+    return showBanner("warn", `النموذج ${a.model} مو منزّل — ينزل تلقائيًا أول ما ترسل (حوالي ${m.gb.fast || "?"}GB).`, "نزّله الحين", () => openSettings("setup"));
+  }
   b.className = "banner";
 }
 async function pollStats() {
@@ -672,7 +683,7 @@ async function pollStats() {
 
 // ================= composer =================
 const inp = $("#inp");
-function autoGrow() { inp.style.height = "auto"; inp.style.height = Math.min(inp.scrollHeight, 240) + "px"; }
+function autoGrow() { inp.dir = dirOf(inp.value); inp.style.height = "auto"; inp.style.height = Math.min(inp.scrollHeight, 240) + "px"; }
 function updateSend() {
   const btn = $("#send");
   if (live && !live.done) { btn.disabled = false; btn.classList.add("stop"); btn.innerHTML = icon("stop"); btn.title = "إيقاف"; return; }
@@ -779,23 +790,61 @@ function openSettings(tab) {
   const s = S.settings;
   $("#sKey").value = ""; $("#sKey").placeholder = s.has_key ? `محفوظ (${s.key_hint}) — اكتب مفتاح جديد لتغييره` : "sk-...";
   $("#sDsModel").innerHTML = S.deepseek_models.map(m => `<option ${m === s.deepseek_model ? "selected" : ""}>${m}</option>`).join("");
-  $("#sEffort").value = s.deepseek_effort; $("#sExec").value = s.executor_model; $("#sFree").value = s.free_model;
+  $("#sEffort").value = s.deepseek_effort;
+  const opts = sel => Object.entries(S.models).map(([id, m]) => `<option value="${esc(id)}" ${id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("");
+  $("#sExec").innerHTML = opts(s.executor_model); $("#sFree").innerHTML = opts(s.free_model); $("#sFreeVar").value = s.free_variant || "auto";
   $("#sCtx").value = String(s.num_ctx); if (!$("#sCtx").value) $("#sCtx").insertAdjacentHTML("beforeend", `<option value="${s.num_ctx}" selected>${s.num_ctx}</option>`);
   $("#sSteps").value = s.max_steps; warm = !!s.keep_executor_warm; $("#sWarm").classList.toggle("on", warm);
   fvStop = s.stop_freevideo_on_exit !== false; $("#sFvStop").classList.toggle("on", fvStop);
   $("#sWs").value = s.workspace; $("#sFvHome").value = s.freevideo_home || ""; $("#sImgModel").value = s.image_model || "auto";
   $("#sLoras").value = (s.image_loras || []).map(l => `${l.name}:${l.strength}`).join("\n");
   api("/api/memory").then(r => $("#sMem").value = r.text || "").catch(() => {});
-  setTab(tab || "ds"); $("#settings").classList.add("on"); loadHealth();
+  setTab(tab || "ds"); $("#settings").classList.add("on");
 }
-function setTab(t) { $$(".tab").forEach(x => x.classList.toggle("on", x.dataset.tab === t)); $$(".pane").forEach(x => x.classList.toggle("on", x.dataset.pane === t)); if (t === "health") loadHealth(); if (t === "skills") loadSkills(); if (t === "gen") loadFv(); }
+function setTab(t) {
+  $$(".tab").forEach(x => x.classList.toggle("on", x.dataset.tab === t)); $$(".pane").forEach(x => x.classList.toggle("on", x.dataset.pane === t));
+  if (t === "health") loadHealth(); if (t === "skills") loadSkills(); if (t === "gen") loadFv(); if (t === "setup") loadSetup();
+}
+// ---- first-run setup / downloads ----
+let setupTimer = null;
+async function loadSetup() {
+  clearTimeout(setupTimer);
+  const box = $("#setupList");
+  if (!$("#settings").classList.contains("on") || !$('.pane[data-pane="setup"]').classList.contains("on")) return;
+  try {
+    const st = await api("/api/setup");
+    if (!st.seen) api("/api/setup/seen", {}).then(pollState).catch(() => {});
+    box.innerHTML = "";
+    let busy = false;
+    for (const it of st.items) {
+      const j = it.job; const running = j && j.state === "running"; busy = busy || running;
+      const row = document.createElement("div"); row.className = "su" + (it.done ? " done" : "");
+      const badge = it.done ? `<span class="ok">${icon("check", "sm")}</span>` : it.required ? `<span class="tag">ضروري</span>` : `<span class="tag soft">اختياري</span>`;
+      const size = it.gb ? `<span class="s">${it.gb >= 1 ? it.gb + " GB" : Math.round(it.gb * 1024) + " MB"}</span>` : "";
+      let sub = "";
+      if (running) sub = `<div class="bar"><i style="width:${j.pct || 0}%"></i></div><div class="s">${esc(j.text || "")}</div>`;
+      else if (j && j.state === "error") sub = `<div class="s bad">${esc(j.error)}</div>`;
+      else if (j && j.state === "done" && j.text && j.text !== "تم ✓") sub = `<div class="s">${esc(j.text)}</div>`;
+      row.innerHTML = `<div class="t">${badge}<b>${esc(it.title)}</b>${size}</div>${sub}<div class="b"></div>`;
+      const b = row.querySelector(".b");
+      if (running) b.appendChild(textBtn("x", "إلغاء", async () => { await api("/api/setup/cancel", {what: it.id}); loadSetup(); }));
+      else if (!it.done) b.appendChild(textBtn(it.id === "ollama_cleanup" ? "trash" : "download", it.id === "ollama_cleanup" ? "احذف" : (j && j.state === "error" ? "أعد المحاولة" : "تحميل"), async () => {
+        if (it.id === "ollama_cleanup" && !confirm("تحذف موديلات Ollama القديمة (qwen3.5:9b و huihui_ai/qwen3.5-abliterated:9b)؟ الحذف نهائي، والإصدار الجديد ما يحتاجها.")) return;
+        try { const r = await api("/api/setup/start", {what: it.id}); if (!r.ok) toast(r.error, true); } catch (e) { toast(e.message, true); }
+        loadSetup();
+      }));
+      box.appendChild(row);
+    }
+    setupTimer = setTimeout(loadSetup, busy ? 1200 : 5000);
+  } catch (e) { box.textContent = e.message; }
+}
 async function loadFv() {
   const box = $("#fvBox"); box.innerHTML = `<div class="h"><i class="spin"></i>يفحص…</div>`;
   try {
     const f = (await api("/api/health")).freevideo;
     const row = (ok, name, note) => `<div class="h"><span class="${ok ? "ok" : "bad"}">${icon(ok ? "check" : "x", "sm")}</span>${name}<span class="s">${esc(note || "")}</span></div>`;
     box.innerHTML = [
-      row(f.installed, "مثبت", f.installed ? f.home : (f.launcher ? "افتح FreeVideo وكمّل التثبيت" : "شغّل install-freevideo.bat")),
+      row(f.installed, "مثبت", f.installed ? f.home : (f.launcher ? "افتح FreeVideo وكمّل التثبيت" : "ثبّته من «الإعداد والتحميلات»")),
       row(f.ready, "شغال وجاهز", f.ready ? `الإصدار ${f.version || ""} · ${f.url}` : (f.running ? (f.problem || "مو جاهز") : "مطفي — يشتغل تلقائيًا وقت التوليد")),
     ].join("");
   } catch (e) { box.textContent = e.message; }
@@ -837,9 +886,10 @@ $("#sKeyTest").onclick = async () => {
   try { const r = await api("/api/check_key", {key: $("#sKey").value.trim()}); h.innerHTML = r.ok ? `<span style="color:var(--ok)">✓ المفتاح شغال — الرصيد: ${esc(r.msg)}</span>` : `<span style="color:var(--bad)">✗ ${esc(r.msg)}</span>`; }
   catch (e) { h.textContent = e.message; }
 };
+$$("[data-close]").forEach(b => b.addEventListener("click", () => clearTimeout(setupTimer)));
 $("#saveSettings").onclick = async () => {
-  const body = {deepseek_model: $("#sDsModel").value, deepseek_effort: $("#sEffort").value, executor_model: $("#sExec").value.trim(),
-    free_model: $("#sFree").value.trim(), num_ctx: +$("#sCtx").value, max_steps: +$("#sSteps").value, keep_executor_warm: warm,
+  const body = {deepseek_model: $("#sDsModel").value, deepseek_effort: $("#sEffort").value, executor_model: $("#sExec").value,
+    free_model: $("#sFree").value, free_variant: $("#sFreeVar").value, num_ctx: +$("#sCtx").value, max_steps: +$("#sSteps").value, keep_executor_warm: warm,
     workspace: $("#sWs").value.trim(), freevideo_home: $("#sFvHome").value.trim(), image_model: $("#sImgModel").value,
     stop_freevideo_on_exit: fvStop,
     image_loras: $("#sLoras").value.split("\n").map(x => x.trim()).filter(Boolean).map(x => { const m = x.match(/^(.*?)(?::(-?[\d.]+))?$/); return {name: m[1].trim(), strength: m[2] ? +m[2] : 1}; })};
@@ -857,14 +907,15 @@ async function loadHealth() {
     const h = await api("/api/health");
     const row = (ok, name, note) => `<div class="h"><span class="${ok ? "ok" : "bad"}">${icon(ok ? "check" : "x", "sm")}</span>${name}<span class="s">${esc(note || "")}</span></div>`;
     box.innerHTML = [
-      row(h.ollama, "Ollama", h.ollama ? "الإصدار " + h.ollama_version : "مو شغال"),
-      ...Object.entries(h.models).map(([k, ok]) => row(ok, S.agents[k].short + " — " + S.agents[k].model, ok ? "منزّل" : "ينزل تلقائيًا أول استخدام")),
+      row(h.llama, "محرك النماذج المحلية (llama.cpp)", h.llama ? "" : "ينزل من «الإعداد والتحميلات»"),
+      ...Object.entries(h.models).map(([k, ok]) => row(ok, S.agents[k].short + " — " + S.agents[k].model, ok ? "منزّل" : "ينزل من «الإعداد» أو أول استخدام")),
       row(h.deepseek_key, "مفتاح DeepSeek", h.deepseek_key ? "موجود" : "ناقص"),
-      row(h.ffmpeg, "ffmpeg", h.ffmpeg ? "" : "شغّل install.bat"),
-      row(h.ytdlp, "yt-dlp (تحميل من المواقع)", h.ytdlp ? "" : "شغّل install.bat"),
-      row(h.extras, "Whisper + إزالة الخلفية + الصوت", h.extras ? "" : "شغّل install-extras.bat"),
-      row(h.realesrgan, "Real-ESRGAN (تكبير الصور)", h.realesrgan ? "" : "شغّل install-extras.bat"),
-      row(h.freevideo.installed, "FreeVideo (توليد الصور والفيديو)", h.freevideo.installed ? (h.freevideo.ready ? "شغال" : "مثبت — يشتغل وقت التوليد") : "شغّل install-freevideo.bat"),
+      row(h.ffmpeg, "ffmpeg", h.ffmpeg ? "" : "يجي مع ملف الـ Setup"),
+      row(h.ytdlp, "yt-dlp (تحميل من المواقع)", h.ytdlp ? "" : "يجي مع ملف الـ Setup"),
+      row(h.node, "Node.js (موشن جرافيك + تحكم المتصفح + Word/PowerPoint)", h.node ? "" : "يجي مع ملف الـ Setup"),
+      row(h.extras, "Whisper + إزالة الخلفية + الصوت", h.extras ? (h.gpu_libs ? "على كرت الشاشة" : "على المعالج — سرّعه من «الإعداد»") : "يجي مع ملف الـ Setup"),
+      row(h.realesrgan, "Real-ESRGAN (تكبير الصور)", h.realesrgan ? "" : "يجي مع ملف الـ Setup"),
+      row(h.freevideo.installed, "FreeVideo (توليد الصور والفيديو)", h.freevideo.installed ? (h.freevideo.ready ? "شغال" : "مثبت — يشتغل وقت التوليد") : "ثبّته من «الإعداد والتحميلات»"),
       row(h.nvidia, "كرت NVIDIA", h.nvidia ? "" : "nvidia-smi مو موجود"),
       row(h.pc_control, "التحكم بالجهاز", h.pc_control ? "" : "ويندوز بس"),
     ].join("");
@@ -914,5 +965,6 @@ addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye", "");
   else { const last = store.get("last", null); if (last && convs.some(c => c.id === last)) await openConv(last); else renderThread(); }
   const st = new URLSearchParams(location.search).get("settings");
   if (st && S) openSettings(st);
+  else if (S && S.setup && S.setup.missing.length && !S.setup.seen) openSettings("setup");   // first run
   updateSend(); inp.focus();
 })();

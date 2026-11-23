@@ -35,20 +35,51 @@ SKIP_DIRS = {"node_modules", ".git", "__pycache__", "venv", ".venv", "site-packa
 EXEC_EXT = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".com", ".scr", ".lnk", ".reg", ".jar", ".py"}
 
 # ---------------- hard limits (always on, every agent) ----------------
-_MINOR = r"\b(child|children|kid|kids|minor|minors|underage|under[- ]?age|teen|teens|teenager|preteen|loli|lolita|shota|toddler|schoolgirl|schoolboy|young girl|young boy|little girl|little boy|\d{1,2}[- ]?(yo|year[- ]old))\b|طفل|طفلة|أطفال|اطفال|قاصر|قاصرة|مراهق|مراهقة|بنت صغيرة|ولد صغير"
-_SEXUAL = r"\b(nude|nudes|naked|nsfw|sex|sexual|sexy|porn|porno|erotic|explicit|lingerie|topless|bottomless|genital|genitals|breasts?|nipples?|undress(ed)?|strip(ping)?|hentai|seductive|provocative)\b|عاري|عارية|جنس|جنسي|إباحي|اباحي|مثير|مثيرة|بدون ملابس"
+_AR = "؀-ۿ"
+
+
+def _ar(words, prefixes="و|ف|ب|ل|ال|وال|بال|لل", suffixes="ة|ه|ها|هم|ين|ات|ون|يا"):
+    """Whole Arabic words (with common prefixes/suffixes) - plain substrings would hit unrelated words."""
+    return rf"(?<![{_AR}])(?:{prefixes})?(?:{'|'.join(words)})(?:{suffixes})?(?![{_AR}])"
+
+
+_MINOR = (r"\b(child|children|kid|kids|minor|minors|underage|under[- ]?age|preteen|pre-teen|tween|loli|lolita|shota|"
+          r"toddler|infant|schoolgirl|schoolboy|young girl|young boy|little girl|little boy|middle school|"
+          r"elementary school|(1[0-7]|[1-9])[- ]?(yo|y/o|years?[- ]old))\b|"
+          + _ar(["طفل", "أطفال", "اطفال", "قاصر", "مراهق", "بزر", "بزران", "رضيع"]) + "|بنت صغيرة|ولد صغير|"
+          + rf"(?<![{_AR}])(عمره|عمرها|سنه|سنها|عمر)\s*(1[0-7]|[1-9])(?!\d)")
+_TEEN = r"\bteen(s|ager|agers|age)?\b"
+_SEXUAL = (r"\b(nude|nudes|nudity|naked|nsfw|sex|sexual|sexy|porn|porno|erotic|explicit|lingerie|topless|bottomless|"
+           r"genital|genitals|breasts?|nipples?|undress(ed|ing)?|strip(ping|tease)?|hentai|seductive|provocative|"
+           r"bikini|underwear)\b|"
+           + _ar(["عاري", "عريان", "جنسي", "إباحي", "اباحي", "إغراء", "اغراء", "مغري"], suffixes="ة|ه|ها|ين|ات|ا")
+           + "|بدون ملابس|بلا ملابس|ملابس داخلية")
+_DEGRADE = (r"\b(humiliat\w*|degrad\w*|mock(ing|ery)?|ridicul\w*|abus\w*|beaten|bloody|injur\w*|disfigur\w*|ugly|"
+            r"fat[- ]?shame\w*|racist|slur|kkk|nazi)\b|"
+            + _ar(["إهانة", "اهانة", "مهين", "يهين", "سخرية", "يتمسخر", "تشويه", "مشوه", "مضروب", "عنصري", "دموي", "مدمم"]))
 
 
 def hard_limit(text):
     """Returns a refusal reason if a generation request crosses the built-in limits (every agent)."""
     t = (text or "").lower()
-    if re.search(_MINOR, t) and re.search(_SEXUAL, t):
+    minor = re.search(_MINOR, t) or (re.search(_TEEN, t) and not re.search(r"\b(1[89]|[2-9]\d)\b", t))
+    if minor and re.search(_SEXUAL, t):
         return "مرفوض: أي محتوى جنسي أو إيحائي فيه قاصرين ممنوع نهائيًا."
     return None
 
 
 def sexual(text):
     return bool(re.search(_SEXUAL, (text or "").lower()))
+
+
+def degrading(text):
+    return bool(re.search(_DEGRADE, (text or "").lower()))
+
+
+def _request_text(args):
+    """Every text field of a generation request (prompt, description, speech...), file paths left out."""
+    skip = {"path", "images", "image_path", "first_frame", "last_frame", "aspect", "quality"}
+    return " ".join(str(v) for k, v in (args or {}).items() if isinstance(v, str) and k not in skip)
 
 
 def generated_by_app(path, root):
@@ -66,7 +97,7 @@ def generation_policy(name, args, policy, root):
     - every agent: nothing sexual involving minors; no sexual edits of photos the app did not make itself
       (they may show real people).
     - "safe" agent (the official executor): no sexual or explicit content at all."""
-    prompt = str(args.get("prompt", ""))
+    prompt = _request_text(args)
     reason = hard_limit(prompt)
     if reason:
         return reason
@@ -74,9 +105,13 @@ def generation_policy(name, args, policy, root):
         return ("المنفذ الرسمي عليه قيود وما يولّد محتوى جنسي أو فاضح. حوّل لوكيل «بدون قيود» أو DeepSeek من فوق "
                 "إذا تبي بدون قيود.")
     inputs = list(args.get("images") or []) + [args.get(k) for k in ("first_frame", "last_frame", "path") if args.get(k)]
-    if sexual(prompt) and any(not generated_by_app(i, root) for i in inputs):
+    real = [i for i in inputs if not generated_by_app(i, root)]
+    if real and sexual(prompt):
         return ("مرفوض: ما أسوي تعديل جنسي أو فاضح على صور حقيقية مرفوعة (ممكن تكون لناس حقيقيين). "
                 "أقدر أسويه على صور ولّدتها أنا.")
+    if real and degrading(prompt):
+        return ("مرفوض: ما أسوي تعديل مهين أو مسيء على صور حقيقية مرفوعة (ممكن تكون لناس حقيقيين). "
+                "أقدر أسويه على شخصيات ولّدتها أنا.")
     return None
 
 
@@ -99,12 +134,13 @@ def inside(p, ws):
 
 
 def _env():
-    """Child processes see the extras venv and the bundled node modules (used by skills)."""
+    """Child processes see the bundled runtime (set up in runtime.py) and, for v1 installs, the extras venv
+    and its node modules (used by skills)."""
     env = dict(os.environ)
     node_mods = LOCAL_DIR / "node" / "node_modules"
-    if node_mods.exists():
+    if node_mods.exists() and str(node_mods) not in env.get("NODE_PATH", ""):
         env["NODE_PATH"] = str(node_mods) + os.pathsep + env.get("NODE_PATH", "")
-    if EXTRAS_PY.exists():
+    if EXTRAS_PY.exists() and str(EXTRAS_PY.parent) not in env.get("PATH", ""):
         env["PATH"] = str(EXTRAS_PY.parent) + os.pathsep + env.get("PATH", "")
     env["PYTHONIOENCODING"] = "utf-8"
     return env
@@ -339,7 +375,13 @@ def needs_approval(name, args, ctx):
     cat "delete" can never be auto-approved; the others accept "always for this session"."""
     ws, root, created = ctx["base"], ctx["workspace"], ctx["created"]
     try:
-        if name in READ_ONLY or name in GENERATE or name in ("remember", "make_dir", "download", "ffmpeg",
+        if name == "ffmpeg":            # writes a NEW file; outside the workspace it needs approval
+            argv = [x.strip("\"'") for x in shlex.split(str(args.get("args", "")), posix=not IS_WIN)]
+            out = _p(argv[-1], ws) if argv else None
+            if out is not None and not inside(out, root):
+                return {"cat": "write", "title": "ffmpeg يكتب ملف خارج مجلد الشغل", "detail": str(out)}
+            return None
+        if name in READ_ONLY or name in GENERATE or name in ("remember", "make_dir", "download",
                                                               "transcribe", "text_to_speech", "remove_background",
                                                               "upscale_image", "video", "image", "load_skill",
                                                               "send_file"):

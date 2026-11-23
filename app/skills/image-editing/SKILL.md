@@ -15,7 +15,7 @@ description: Edit or create images - resize, crop, convert format, compress, rot
 | Look at an image | `view_image` |
 
 ## Prompt writing for generate_image / edit_image
-- Load the `ai-generation` skill for the full guide. Short version: English, full sentences, concrete subject, setting,
+- Load the `image-director` skill for the full guide (brief → generate → inspect → fix). Short version: English, full sentences, concrete subject, setting,
   lighting, camera and style; any text to draw goes in quotes; aspect 9:16 for phone/portrait, 16:9 for landscape.
 
 ## Rules

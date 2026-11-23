@@ -1,0 +1,77 @@
+name: Build Windows installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HYPERFRAMES_NO_TELEMETRY: "1"
+      HYPERFRAMES_NO_UPDATE_CHECK: "1"
+      DO_NOT_TRACK: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path app/config.py -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Check the app code
+        shell: pwsh
+        run: |
+          python -m py_compile (Get-ChildItem app -Recurse -Filter *.py | Where-Object { $_.FullName -notmatch '\\skills\\' }).FullName
+          node --check app/ui/app.js
+
+      - name: Build runtime (Python, ffmpeg, yt-dlp, Node, llama.cpp, Real-ESRGAN)
+        shell: pwsh
+        run: ./build/build-runtime.ps1
+
+      - name: Smoke test the bundled runtime
+        shell: pwsh
+        run: |
+          $rt = "runtime"
+          & "$rt/python/python.exe" -c "import faster_whisper, rembg, edge_tts, PIL, pypdf, openpyxl, docx, pptx; print('python ok')"
+          & "$rt/bin/ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+          & "$rt/bin/yt-dlp.exe" --version
+          & "$rt/node/node.exe" --version
+          & "$rt/node/node_modules/.bin/hyperframes.cmd" --version
+          $srv = Get-ChildItem $rt/llama -Recurse -Filter llama-server.exe | Select-Object -First 1
+          & $srv.FullName --version
+          & "$rt/python/python.exe" -c "import sys; sys.path.insert(0, 'app'); import config, localai, setup_jobs, skills_mgr; print(len(skills_mgr.all_skills()), 'skills'); print('server', localai.server_exe())"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $lang = Join-Path (Split-Path $iscc) "Languages\Arabic.isl"
+          if (-not (Test-Path $lang)) { (Get-Content build/3zT-Agent.iss) | Where-Object { $_ -notmatch 'Arabic\.isl' } | Set-Content build/3zT-Agent.iss }
+          & $iscc "/DAppVersion=${{ steps.v.outputs.version }}" build/3zT-Agent.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3zT-Agent-Setup-${{ steps.v.outputs.version }}
+          path: dist/*.exe
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --title "3zT Agent $tag" --notes-file build/RELEASE_NOTES.md }
+          gh release upload $tag (Get-ChildItem dist/*.exe).FullName --clobber

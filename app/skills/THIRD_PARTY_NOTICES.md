@@ -403,3 +403,13 @@ This license becomes null and void if any of the above conditions are not met.
 DISCLAIMER
 
 THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE FONT SOFTWARE.  
+---
+
+## **Bundled agent skills (3zT Agent 2.0)**
+
+Each folder keeps its full license text in `LICENSE.txt`.
+
+- **ffmpeg-skill** — Copyright (c) 2026 kajisho5 — MIT License — https://github.com/kajisho5/ffmpeg-skill
+- **ponytail** — Copyright (c) 2026 DietrichGebert — MIT License — https://github.com/DietrichGebert/ponytail
+- **hyperframes, hyperframes-cli** — HeyGen — Apache License 2.0 — https://github.com/heygen-com/hyperframes
+- **agent-browser** — Vercel — Apache License 2.0 — https://github.com/vercel-labs/agent-browser

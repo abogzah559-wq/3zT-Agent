@@ -4,3 +4,6 @@ settings.json
 *.part
 .venv/
 venv/
+runtime/
+dist/
+build/tmp/

@@ -20,13 +20,27 @@ DISABLED_FILE = DATA_DIR / "skills_disabled.json"
 
 
 def _front(text):
+    """YAML front matter (flat keys; supports quoted values and > / | block values)."""
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.S)
     meta = {}
     if m:
-        for line in m.group(1).splitlines():
+        lines = m.group(1).splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            i += 1
+            if not line.strip() or line[:1] in (" ", "\t") or ":" not in line:
+                continue
             k, _, v = line.partition(":")
-            if k.strip() and v.strip():
-                meta[k.strip().lower()] = v.strip().strip('"').strip("'")
+            v = v.strip()
+            if v in (">", "|", ">-", "|-", ">+", "|+"):
+                block = []
+                while i < len(lines) and (lines[i][:1] in (" ", "\t") or not lines[i].strip()):
+                    block.append(lines[i].strip())
+                    i += 1
+                v = ("\n" if v.startswith("|") else " ").join(x for x in block if x).strip()
+            if k.strip() and v:
+                meta[k.strip().lower()] = v.strip('"').strip("'")
         text = text[m.end():]
     return meta, text
 

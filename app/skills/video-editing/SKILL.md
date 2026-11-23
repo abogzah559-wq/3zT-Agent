@@ -4,6 +4,10 @@ description: Edit videos - cut/trim, merge, compress for Discord/WhatsApp/TikTok
 ---
 # Video editing
 
+## Bigger jobs
+For multi-step edits, captions styling, loudness, platform exports and delivery checks load `ffmpeg-skill`
+(42 tested scripts). For a whole new video from an idea load `video-director`.
+
 ## Golden rules
 1. ALWAYS start with `media_info` on the input to know duration, resolution, fps, codecs.
 2. Prefer the `video` tool (one operation per call). It writes the result into the chat folder and shows it to the user automatically. Use raw `ffmpeg` only for things the `video` tool cannot do.

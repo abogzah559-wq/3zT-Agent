@@ -139,7 +139,7 @@ def extras_ok():
 
 def _worker(args, timeout=7200):
     if not extras_ok():
-        raise RuntimeError("الإضافات (Whisper / إزالة الخلفية / الصوت) مو مثبتة. شغّل install-extras.bat")
+        raise RuntimeError("الإضافات (Whisper / إزالة الخلفية / الصوت) مو موجودة. أعد تثبيت البرنامج من ملف الـ Setup")
     code, out = run([str(EXTRAS_PY), str(ROOT / "workers" / "media_worker.py"), *args], timeout)
     line = next((x for x in reversed(out.strip().splitlines()) if x.startswith("{")), "")
     if not line:
@@ -180,7 +180,7 @@ def realesrgan_exe():
 def upscale(src, out_png, scale=4, anime=False):
     exe = realesrgan_exe()
     if not exe:
-        raise RuntimeError("Real-ESRGAN مو مثبت. شغّل install-extras.bat")
+        raise RuntimeError("Real-ESRGAN مو موجود. أعد تثبيت البرنامج من ملف الـ Setup")
     model = "realesrgan-x4plus-anime" if anime else "realesrgan-x4plus"
     code, out = run([str(exe), "-i", str(src), "-o", str(out_png), "-n", model, "-s", "4", "-f", "png"],
                     1800, cwd=str(exe.parent))
@@ -225,7 +225,7 @@ def download(url, out_dir, audio_only=False):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=60) as r:
         if "text/html" in (r.headers.get("Content-Type") or "") and not direct:
-            raise RuntimeError("هذا رابط صفحة مو ملف. لتحميل الفيديوهات ثبّت yt-dlp (install.bat يثبته).")
+            raise RuntimeError("هذا رابط صفحة مو ملف. yt-dlp مو موجود (يجي مع ملف الـ Setup).")
         dst = out_dir / (name or f"download_{int(time.time())}")
         if dst.exists():
             dst = dst.with_name(f"{dst.stem}_{int(time.time())}{dst.suffix}")

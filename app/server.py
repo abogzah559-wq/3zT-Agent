@@ -1,7 +1,7 @@
 """3zT Agent — local server (Python standard library only) and window lifecycle.
 
 Runs on http://127.0.0.1:7272 and opens itself as an app window (Edge/Chrome --app with a
-private profile). Closing that window shuts everything down: models leave VRAM, Ollama and
+private profile). Closing that window shuts everything down: the local model server (llama.cpp) and
 FreeVideo (if the app started it) are stopped, and this process exits.
 """
 import json
@@ -21,17 +21,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import runtime  # noqa: E402
+
+runtime.setup()
+
 import agent  # noqa: E402
 import freevideo  # noqa: E402
 import llm  # noqa: E402
+import localai  # noqa: E402
 import media  # noqa: E402
+import setup_jobs  # noqa: E402
 import pc  # noqa: E402
 import skills_mgr  # noqa: E402
 import stats  # noqa: E402
 import store  # noqa: E402
 import tools  # noqa: E402
-from config import (AGENTS, DATA_DIR, DEEPSEEK_MODELS, IS_WIN, LOG_FILE, MEDIA_DIR, MEMORY_FILE,  # noqa: E402
-                    NO_WINDOW, PORT, UI_DIR, VERSION, load_settings, model_of, save_settings)
+from config import (AGENTS, DATA_DIR, DEEPSEEK_MODELS, IS_WIN, LOG_FILE, MEDIA_DIR,  # noqa: E402
+                    MEMORY_FILE, MODEL_VARIANTS, MODELS, NO_WINDOW, PORT, UI_DIR, VERSION, load_settings, model_of,
+                    save_settings)
 
 _h = RotatingFileHandler(LOG_FILE, maxBytes=2 << 20, backupCount=2, encoding="utf-8")
 _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -41,6 +48,7 @@ LOG.addHandler(_h)
 
 S = load_settings()
 agent.S = S
+setup_jobs.S = S
 freevideo.configure(S["freevideo_home"], S["freevideo_url"])
 if freevideo.installed() and str(freevideo.CFG["home"]) != S["freevideo_home"]:
     S["freevideo_home"] = str(freevideo.CFG["home"])    # remember where the launcher put the engine
@@ -87,17 +95,23 @@ def media_allowed(p: Path):
 
 
 def health():
-    ok = llm.ollama_ok()
-    installed = set(llm.ollama_installed()) if ok else set()
     nv = shutil.which("nvidia-smi") is not None
+    models = {}
+    for k, a in AGENTS.items():
+        if a["kind"] == "local":
+            m = model_of(k, S)
+            models[k] = any(localai.installed(m, v) for v in localai.variants(m))
+    exe = localai.server_exe()
     return {
-        "ollama": ok, "ollama_version": llm.ollama_version() if ok else "",
-        "models": {k: (llm.norm_tag(model_of(k, S)) in installed) for k, a in AGENTS.items() if a["kind"] == "ollama"},
+        "llama": exe is not None, "llama_path": str(exe or ""),
+        "models": models,
         "deepseek_key": bool(S.get("deepseek_key")),
         "ffmpeg": media.have("ffmpeg"), "ytdlp": media.ytdlp_cmd() is not None,
+        "node": shutil.which("node") is not None,
         "freevideo": freevideo.health(),
         "extras": media.extras_ok(), "realesrgan": media.realesrgan_exe() is not None,
-        "nvidia": nv, "pc_control": IS_WIN,
+        "gpu_libs": setup_jobs.gpu_libs_ok(),
+        "nvidia": nv, "pc_control": IS_WIN, "bundled": runtime.bundled(),
     }
 
 
@@ -209,8 +223,9 @@ def open_window():
 
 def shutdown():
     LOG.info("shutdown")
+    setup_jobs.cancel_all()
     try:
-        agent.unload_all()
+        localai.kill_now()
     except Exception:
         pass
     if S.get("stop_freevideo_on_exit", True):
@@ -218,9 +233,6 @@ def shutdown():
             freevideo.stop()
         except Exception:
             pass
-    if IS_WIN:
-        subprocess.run(["taskkill", "/F", "/IM", "ollama app.exe", "/IM", "ollama.exe"],
-                       capture_output=True, creationflags=NO_WINDOW)
     logging.shutdown()
     os._exit(0)
 
@@ -334,11 +346,16 @@ class H(BaseHTTPRequestHandler):
                 run = agent.active_run()
                 return self._json({
                     "version": VERSION, "settings": public_settings(), "status": agent.STATUS,
-                    "agents": {k: {**a, "model": model_of(k, S)} for k, a in AGENTS.items()},
+                    "agents": {k: {**a, "model": (MODELS[model_of(k, S)]["name"] if a["kind"] == "local"
+                                                  else model_of(k, S))} for k, a in AGENTS.items()},
+                    "models": {m: {"name": v["name"], "variants": list(v["variants"]), "gb": v["gb"]}
+                               for m, v in MODELS.items()},
                     "deepseek_models": DEEPSEEK_MODELS, "pull": agent.PULL,
                     "run": {"id": run.id, "conv": run.conv["id"]} if run else None,
-                    "ollama": llm.ollama_ok(), "always": sorted(agent.ALWAYS),
+                    "always": sorted(agent.ALWAYS), "setup": setup_jobs.summary(),
                 })
+            if path == "/api/setup":
+                return self._json(setup_jobs.status())
             if path == "/api/stats":
                 return self._json(stats.get())
             if path == "/api/health":
@@ -351,12 +368,15 @@ class H(BaseHTTPRequestHandler):
                     return self._json({"error": "المحادثة مو موجودة"}, 404)
                 run = next((r for r in agent.RUNS.values() if r.running() and r.conv["id"] == conv["id"]), None)
                 extra = {"run": run.id if run else None, "base": run.base if run else None}
+                body = b""
                 for _ in range(20):        # the run thread may be appending right now
                     try:
                         body = json.dumps({**conv, **extra}, ensure_ascii=False).encode("utf-8")
                         break
                     except RuntimeError:
                         time.sleep(0.01)
+                if not body:
+                    return self._json({"error": "المحادثة تتحدث الحين، أعد المحاولة"}, 503)
                 return self._send(200, body)
             if path == "/api/memory":
                 return self._json({"text": agent.read_memory()})
@@ -552,6 +572,16 @@ class H(BaseHTTPRequestHandler):
                 if IS_WIN:
                     os.startfile(target)  # noqa
                 return self._json({"ok": True})
+            if path == "/api/setup/start":
+                ok, msg = setup_jobs.start(str(b.get("what") or ""))
+                return self._json({"ok": ok, "error": "" if ok else msg})
+            if path == "/api/setup/cancel":
+                setup_jobs.cancel(str(b.get("what") or ""))
+                return self._json({"ok": True})
+            if path == "/api/setup/seen":
+                S["setup_seen"] = True
+                save_settings(S)
+                return self._json({"ok": True})
             if path == "/api/freevideo/start":
                 def _start():
                     try:
@@ -559,7 +589,7 @@ class H(BaseHTTPRequestHandler):
                     except Exception as e:
                         LOG.warning("freevideo start: %s", e)
                 if not freevideo.launcher() and not freevideo.installed():
-                    return self._json({"ok": False, "error": "FreeVideo مو مثبت. شغّل install-freevideo.bat"})
+                    return self._json({"ok": False, "error": "FreeVideo مو مثبت. ثبّته من الإعدادات ← الإعداد."})
                 threading.Thread(target=_start, daemon=True).start()
                 return self._json({"ok": True})
             if path == "/api/window":
@@ -597,9 +627,14 @@ class H(BaseHTTPRequestHandler):
             S["deepseek_effort"] = b["deepseek_effort"]
         for k in ("executor_model", "free_model"):
             v = str(b.get(k) or "").strip()
-            if v and re.match(r"^[\w.\-/:]+$", v) and v != S[k]:
-                llm.ollama_unload(S[k])
+            if v in MODELS and v != S[k]:
+                if localai.current()[0] == S[k]:
+                    localai.stop()
                 S[k] = v
+        if b.get("free_variant") in MODEL_VARIANTS and b["free_variant"] != S.get("free_variant"):
+            S["free_variant"] = b["free_variant"]
+            if localai.current()[0] == S["free_model"]:
+                localai.stop()           # restart with the chosen file next time
         if b.get("workspace"):
             ws = Path(os.path.expandvars(os.path.expanduser(str(b["workspace"]).strip())))
             ws.mkdir(parents=True, exist_ok=True)
@@ -630,13 +665,12 @@ class H(BaseHTTPRequestHandler):
         if "think" in b:
             S["think"] = bool(b["think"])
         if b.get("num_ctx"):
-            n = max(4096, min(int(b["num_ctx"]), 131072))
+            n = max(4096, min(_int(b["num_ctx"], S["num_ctx"]), 131072))
             if n != S["num_ctx"]:
                 S["num_ctx"] = n
-                for m in agent.local_models():          # reload with the new context size next time
-                    llm.ollama_unload(m)
+                localai.stop()                           # reload with the new context size next time
         if b.get("max_steps"):
-            S["max_steps"] = max(5, min(int(b["max_steps"]), 150))
+            S["max_steps"] = max(5, min(_int(b["max_steps"], S["max_steps"]), 150))
         save_settings(S)
         agent.refresh_status()
         return self._json({"ok": True, "settings": public_settings()})
@@ -719,6 +753,13 @@ class H(BaseHTTPRequestHandler):
         key = b.get("agent") if b.get("agent") in AGENTS else conv.get("agent") or S["active"]
         store.save(conv)
         return self._json({"conv": conv["id"], **self._start(conv, key)})
+
+
+def _int(v, default):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return int(default)
 
 
 def _looks_text(p):

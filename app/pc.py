@@ -232,6 +232,8 @@ def type_text(text):
     seq = []
     for k in range(0, len(units), 2):
         code = units[k] | (units[k + 1] << 8)
+        if code == 13:                          # \r of a \r\n pair: the \n below presses Enter once
+            continue
         if code == 10:                          # newline -> Enter
             seq += [_key(0x0D), _key(0x0D, flags=KEYEVENTF_KEYUP)]
             continue

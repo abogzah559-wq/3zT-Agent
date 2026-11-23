@@ -1,4 +1,4 @@
-"""Model backends: DeepSeek (cloud, OpenAI-compatible SSE) and Ollama (local NDJSON).
+"""Model backends: DeepSeek (cloud) and the local llama.cpp server. Both speak OpenAI-style SSE.
 
 Both stream generators yield (kind, value) tuples:
   ("think", str) ("text", str) ("tool_calls", [..]) ("usage", {..}) ("error", str)
@@ -10,7 +10,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from config import DEEPSEEK_URL, OLLAMA_URL
+import localai
+from config import DEEPSEEK_URL, LLAMA_URL
 
 
 def _post(url, body, headers=None, timeout=600):
@@ -48,74 +49,6 @@ def describe_error(e):
 
 def new_call_id():
     return "call_" + uuid.uuid4().hex[:12]
-
-
-# ===================== Ollama: VRAM management =====================
-def norm_tag(name):
-    return name if ":" in name.split("/")[-1] else name + ":latest"
-
-
-def ollama_ok():
-    try:
-        _get_json(OLLAMA_URL + "/api/version", 3)
-        return True
-    except Exception:
-        return False
-
-
-def ollama_version():
-    try:
-        return _get_json(OLLAMA_URL + "/api/version", 3).get("version", "")
-    except Exception:
-        return ""
-
-
-def ollama_loaded():
-    try:
-        return [norm_tag(m["name"]) for m in _get_json(OLLAMA_URL + "/api/ps").get("models", [])]
-    except Exception:
-        return []
-
-
-def ollama_installed():
-    try:
-        return [norm_tag(m["name"]) for m in _get_json(OLLAMA_URL + "/api/tags").get("models", [])]
-    except Exception:
-        return []
-
-
-def ollama_load(model, num_ctx):
-    """Load a model into VRAM and keep it there until unloaded."""
-    try:
-        with _post(OLLAMA_URL + "/api/generate",
-                   {"model": model, "keep_alive": -1, "options": {"num_ctx": int(num_ctx)}},
-                   timeout=900) as r:
-            r.read()
-        return True, ""
-    except Exception as e:
-        return False, describe_error(e)
-
-
-def ollama_unload(model):
-    try:
-        with _post(OLLAMA_URL + "/api/generate", {"model": model, "keep_alive": 0}, timeout=60) as r:
-            r.read()
-    except Exception:
-        pass
-
-
-def ollama_caption(model, images_b64, num_ctx, question=None):
-    """Describe images with the local vision model (used to give DeepSeek 'eyes')."""
-    prompt = question or ("Describe this image in detail for someone who cannot see it: objects, people, "
-                          "text (transcribe it exactly), layout, colors, UI elements. Be factual.")
-    body = {"model": model, "stream": False, "think": False, "keep_alive": -1,
-            "options": {"num_ctx": int(num_ctx)},
-            "messages": [{"role": "user", "content": prompt, "images": images_b64}]}
-    try:
-        with _post(OLLAMA_URL + "/api/chat", body, timeout=600) as r:
-            return (json.load(r).get("message") or {}).get("content", "").strip()
-    except Exception as e:
-        return f"(ما قدرت أوصف الصورة: {describe_error(e)})"
 
 
 # ===================== message conversion =====================
@@ -160,26 +93,6 @@ def to_deepseek(msgs, flatten=False):
     return out
 
 
-def to_ollama(msgs):
-    out = []
-    for m in msgs:
-        r = m["role"]
-        if r == "assistant":
-            a = {"role": "assistant", "content": m.get("content") or ""}
-            if m.get("tool_calls"):
-                a["tool_calls"] = [{"function": {"name": t["name"], "arguments": t["args"]}}
-                                   for t in m["tool_calls"]]
-            out.append(a)
-        elif r == "tool":
-            out.append({"role": "tool", "content": m["content"], "tool_name": m.get("name", "")})
-        else:
-            x = {"role": r, "content": m.get("content") or ""}
-            if m.get("images_b64"):
-                x["images"] = m["images_b64"]
-            out.append(x)
-    return out
-
-
 # ===================== streaming =====================
 def stream_deepseek(key, model, effort, msgs, tools, cancel):
     """msgs are internal messages (captions already applied)."""
@@ -216,6 +129,11 @@ def stream_deepseek(key, model, effort, msgs, tools, cancel):
             yield "error", "DeepSeek: " + describe_error(e)
             return
 
+    yield from _sse(resp, cancel, "DeepSeek")
+
+
+def _sse(resp, cancel, label):
+    """Parse an OpenAI-style SSE stream into (kind, value) tuples."""
     calls = {}
     try:
         for raw in resp:
@@ -231,6 +149,10 @@ def stream_deepseek(key, model, effort, msgs, tools, cancel):
                 obj = json.loads(data)
             except Exception:
                 continue
+            if obj.get("error"):
+                err = obj["error"]
+                yield "error", f"{label}: " + str(err.get("message") if isinstance(err, dict) else err)
+                return
             if obj.get("usage"):
                 yield "usage", obj["usage"]
             if not obj.get("choices"):
@@ -247,7 +169,7 @@ def stream_deepseek(key, model, effort, msgs, tools, cancel):
                 c["name"] += f.get("name") or ""
                 c["args"] += f.get("arguments") or ""
     except Exception as e:
-        yield "error", "DeepSeek: انقطع الاتصال (" + describe_error(e) + ")"
+        yield "error", f"{label}: انقطع الاتصال (" + describe_error(e) + ")"
         return
     finally:
         try:
@@ -268,66 +190,31 @@ def stream_deepseek(key, model, effort, msgs, tools, cancel):
         yield "tool_calls", res
 
 
-def stream_ollama(model, msgs, tools, cancel, think, num_ctx):
-    body = {"model": model, "messages": to_ollama(msgs), "stream": True, "think": bool(think),
-            "keep_alive": -1, "options": {"num_ctx": int(num_ctx)}}
-    if tools:
-        body["tools"] = tools
+def stream_local(model, msgs, tools, cancel, think):
+    """Local llama.cpp server. msgs carry images_b64 on user messages."""
+    body = localai.request_body(model, msgs, tools, think)
     resp = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            resp = _post(OLLAMA_URL + "/api/chat", body, timeout=900)
+            resp = _post(LLAMA_URL + "/v1/chat/completions", body, {"Accept": "text/event-stream"}, timeout=900)
             break
         except urllib.error.HTTPError as e:
             err = describe_error(e)
-            if "think" in err.lower() and "think" in body and attempt == 0:
-                body.pop("think")              # model has no thinking support
+            if e.code == 503 and attempt < 2 and not cancel.is_set():   # still loading
+                time.sleep(3)
                 continue
-            yield "error", "Ollama: " + err
+            if "image" in err.lower() and any(isinstance(m.get("content"), list) for m in body["messages"]):
+                yield "error", "النموذج المحلي ما قدر يقرأ الصورة (ملف الرؤية mmproj ناقص؟): " + err
+                return
+            yield "error", "النموذج المحلي: " + err
             return
         except Exception as e:
-            yield "error", "Ollama: " + describe_error(e) + " — تأكد إن Ollama شغال."
-            return
-    calls = []
-    try:
-        for raw in resp:
-            if cancel.is_set():
-                break
-            try:
-                ch = json.loads(raw)
-            except Exception:
+            if attempt < 2 and not cancel.is_set():
+                time.sleep(2)
                 continue
-            if ch.get("error"):
-                yield "error", "Ollama: " + str(ch["error"])
-                return
-            m = ch.get("message") or {}
-            if m.get("thinking"):
-                yield "think", m["thinking"]
-            if m.get("content"):
-                yield "text", m["content"]
-            for tc in m.get("tool_calls") or []:
-                f = tc.get("function") or {}
-                args = f.get("arguments") or {}
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        args = {"_raw": args}
-                calls.append({"id": new_call_id(), "name": (f.get("name") or "").strip(), "args": args})
-            if ch.get("done"):
-                yield "usage", {"prompt_tokens": ch.get("prompt_eval_count", 0),
-                                "completion_tokens": ch.get("eval_count", 0)}
-                break
-    except Exception as e:
-        yield "error", "Ollama: انقطع البث (" + describe_error(e) + ")"
-        return
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
-    if calls and not cancel.is_set():
-        yield "tool_calls", calls
+            yield "error", "النموذج المحلي: " + describe_error(e) + " — النموذج مو شغال، جرّب ترسل مرة ثانية."
+            return
+    yield from _sse(resp, cancel, "النموذج المحلي")
 
 
 def deepseek_check(key):

@@ -6,6 +6,7 @@ conversation, so the UI renders live runs and saved chats with the same code.
 """
 import json
 import logging
+import re
 import threading
 import time
 import urllib.parse
@@ -14,17 +15,18 @@ from pathlib import Path
 
 import freevideo
 import llm
+import localai
 import outpaint
 import media
 import skills_mgr
 import store
 import tools
-from config import AGENTS, MEMORY_FILE, OLLAMA_URL, model_of
+from config import AGENTS, MEMORY_FILE, model_of
 
 LOG = logging.getLogger("3zt")
 
 S = {}                      # live settings (set by server)
-STATUS = {k: "off" for k in AGENTS}       # off | loading | ready | cloud | nokey | missing
+STATUS = {k: "off" for k in AGENTS}       # off | loading | pulling | ready | cloud | nokey | missing
 PULL = {}                   # model -> {"pct", "text"} while downloading
 VRAM_LOCK = threading.RLock()
 ALWAYS = set()              # approval categories allowed for the whole session
@@ -32,7 +34,7 @@ CREATED = set()             # files the agent created this session (editable wit
 RUNS = {}                   # run_id -> Run
 WINDOW = {"gone": False}
 
-TOOL_CAP = {"ollama": 12_000, "deepseek": 50_000}
+TOOL_CAP = {"local": 12_000, "deepseek": 50_000}
 STORE_CAP = 50_000
 
 
@@ -58,82 +60,71 @@ def file_card(p):
 
 # ============================ model management ============================
 def local_models():
-    return {model_of(k, S) for k, a in AGENTS.items() if a["kind"] == "ollama"}
+    return {model_of(k, S) for k, a in AGENTS.items() if a["kind"] == "local"}
+
+
+def variant_of(key):
+    """Which file of the agent's model to run: the free agent has a speed/quality choice."""
+    model = model_of(key, S)
+    setting = S.get("free_variant", "auto") if key == "free" else "auto"
+    return localai.pick_variant(model, setting)
 
 
 def refresh_status():
-    loaded = set(llm.ollama_loaded())
-    installed = None
+    cur_model, cur_var = localai.current()
     for k, a in AGENTS.items():
         if a["kind"] == "deepseek":
             STATUS[k] = "cloud" if S.get("deepseek_key") else "nokey"
             continue
         if STATUS[k] in ("loading", "pulling"):
             continue
-        m = llm.norm_tag(model_of(k, S))
-        if m in loaded:
+        m = model_of(k, S)
+        if cur_model == m:
             STATUS[k] = "ready"
         else:
-            if installed is None:
-                installed = set(llm.ollama_installed())
-            STATUS[k] = "off" if (m in installed or not installed) else "missing"
+            STATUS[k] = "off" if localai.installed(m, "fast") or localai.installed(m, "quality") else "missing"
 
 
-def pull_model(model, progress=None):
-    """Download a model through Ollama with progress. Returns (ok, error)."""
-    PULL[model] = {"pct": 0, "text": "يبدأ التحميل..."}
-    try:
-        resp = llm._post(OLLAMA_URL + "/api/pull", {"model": model, "stream": True}, timeout=7200)
-        last = 0
-        for raw in resp:
+def _progress_hook(model, progress):
+    """Mirror download progress into PULL (banner) and the run's progress line."""
+    def hook(text):
+        if "|" in text:
+            txt, pct = text.rsplit("|", 1)
             try:
-                ev = json.loads(raw)
-            except Exception:
-                continue
-            if ev.get("error"):
-                return False, ev["error"]
-            st = ev.get("status", "")
-            if ev.get("total"):
-                pct = int(ev.get("completed", 0) * 100 / ev["total"])
-                txt = f"ينزّل {model}: {ev.get('completed', 0) / 2**30:.2f} / {ev['total'] / 2**30:.2f} GB"
-            else:
-                pct, txt = PULL[model]["pct"], f"{model}: {st}"
-            PULL[model] = {"pct": pct, "text": txt}
-            if progress and time.time() - last > 0.5:
-                progress(f"{txt}|{pct}")
-                last = time.time()
-        return True, ""
-    except Exception as e:
-        return False, llm.describe_error(e)
-    finally:
-        PULL.pop(model, None)
+                PULL[model] = {"pct": int(pct), "text": txt}
+            except ValueError:
+                pass
+        if progress:
+            progress(text)
+    return hook
 
 
-def ensure_local(key, progress=None):
-    """Make sure the agent's local model is the one in VRAM. Returns error text or ''."""
+def ensure_local(key, progress=None, cancel=None):
+    """Make sure the agent's local model is the one running. Returns error text or ''."""
     model = model_of(key, S)
     with VRAM_LOCK:
-        if llm.norm_tag(model) in llm.ollama_loaded():
+        variant = variant_of(key)
+        if localai.current() == (model, variant) and localai.healthy():
             STATUS[key] = "ready"
             return ""
-        if not llm.ollama_ok():
-            return "Ollama مو شغال. سكّر البرنامج وافتحه من الاختصار، أو شغّل Ollama."
         for k, a in AGENTS.items():
-            if a["kind"] == "ollama" and k != key and model_of(k, S) != model:
-                llm.ollama_unload(model_of(k, S))
+            if a["kind"] == "local" and k != key:
                 STATUS[k] = "off"
-        if llm.norm_tag(model) not in llm.ollama_installed():
-            STATUS[key] = "pulling"
-            ok, err = pull_model(model, progress)
-            if not ok:
-                STATUS[key] = "missing"
-                return f"ما قدرت أنزّل النموذج {model}: {err}"
-        STATUS[key] = "loading"
-        if progress:
-            progress("يحمّل النموذج في كرت الشاشة...")
-        ok, err = llm.ollama_load(model, S["num_ctx"])
-        STATUS[key] = "ready" if ok else "off"
-        return "" if ok else f"ما قدرت أحمّل {model}: {err}"
+        missing = not localai.installed(model, variant)
+        STATUS[key] = "pulling" if missing else "loading"
+        try:
+            err = localai.load(model, variant, S.get("num_ctx"), _progress_hook(model, progress), cancel)
+        finally:
+            PULL.pop(model, None)
+        if err and variant != "fast":          # the bigger variant did not fit: fall back
+            if progress:
+                progress("النسخة الأعلى جودة ما ركبت، أشغّل النسخة السريعة...")
+            localai.BROKEN.add((model, variant))
+            err2 = localai.load(model, "fast", S.get("num_ctx"), _progress_hook(model, progress), cancel)
+            PULL.pop(model, None)
+            err = err2 or ""
+        STATUS[key] = "ready" if not err else ("missing" if not localai.installed(model, "fast") else "off")
+        return err
 
 
 def switch(key):
@@ -143,17 +134,12 @@ def switch(key):
 
     def work():
         with VRAM_LOCK:
-            for k, a in AGENTS.items():
-                if k == key or a["kind"] != "ollama":
-                    continue
-                keep = target["kind"] == "deepseek" and k == "executor" and S.get("keep_executor_warm")
-                if not keep and model_of(k, S) != (model_of(key, S) if target["kind"] == "ollama" else None):
-                    llm.ollama_unload(model_of(k, S))
-                    STATUS[k] = "off"
-            if target["kind"] == "ollama":
+            if target["kind"] == "local":
                 ensure_local(key)
-            elif S.get("keep_executor_warm") and llm.ollama_ok():
+            elif S.get("keep_executor_warm"):
                 ensure_local("executor")
+            else:
+                localai.stop()
             refresh_status()
 
     if not any(r.running() for r in RUNS.values()):
@@ -161,24 +147,19 @@ def switch(key):
 
 
 def warmup():
-    for _ in range(40):
-        if llm.ollama_ok():
-            break
-        time.sleep(1)
     key = S.get("active", "executor")
     try:
-        if AGENTS[key]["kind"] == "ollama":
-            ensure_local(key)
-        elif S.get("keep_executor_warm"):
-            ensure_local("executor")
+        target = key if AGENTS[key]["kind"] == "local" else ("executor" if S.get("keep_executor_warm") else None)
+        # only start a model that is already downloaded: big downloads wait for the user to send something
+        if target and any(localai.installed(model_of(target, S), v) for v in localai.variants(model_of(target, S))):
+            ensure_local(target)
     except Exception:
         LOG.exception("warmup")
     refresh_status()
 
 
 def unload_all():
-    for m in local_models():
-        llm.ollama_unload(m)
+    localai.stop()
 
 
 # ============================ prompts ============================
@@ -189,16 +170,40 @@ def read_memory():
         return ""
 
 
+_HW = {}
+
+
+def _hardware_line():
+    """', كرت NVIDIA ... (12GB)، رام 16GB' measured once (the app is public: never assume one PC)."""
+    if "line" not in _HW:
+        try:
+            import stats
+            g = stats.get()
+            parts = []
+            if g.get("gpu"):
+                parts.append(f"كرت {g['gpu']['name']} ({g['gpu']['vram_total']:.0f}GB)")
+            if g.get("ram_total"):
+                parts.append(f"رام {g['ram_total']:.0f}GB")
+            _HW["line"] = ("، " + "، ".join(parts)) if parts else ""
+        except Exception:
+            _HW["line"] = ""
+    return _HW["line"]
+
+
 def system_prompt(key, conv=None):
     ws = S["workspace"]
     folder = str(chat_dir(conv)) if conv else ws
     now = time.strftime("%Y-%m-%d %H:%M (%A)")
     mem = read_memory()
+    hw = _hardware_line()
     base = f"""أنت 3zT Agent، مساعد شخصي ذكي يشتغل على كمبيوتر صاحبه مباشرة.
-- الوقت الحالي: {now}. الجهاز: ويندوز، كرت NVIDIA RTX 4070 Super (12GB)، رام 16GB.
-- رد دايمًا بالعربي باللهجة السعودية (مو مصري ولا فصحى ثقيلة)، بوضوح واختصار، واستخدم Markdown لما يفيد.
+- الوقت الحالي: {now}. الجهاز: ويندوز{hw}.
+- رد دايمًا بالعربي باللهجة السعودية البيضاء، بوضوح واختصار، واستخدم Markdown لما يفيد.
+  قل: وش، ليش، أبي/تبي، الحين، كذا، مو، زين، مرة، عشان، وين، إيه، أبشر، تم.
+  لا تقول أبد (مصري): عايز، إزاي، دلوقتي، كده، بتاع، أوي، مش، النهارده. ولا فصحى ثقيلة.
 - مجلد هالمحادثة: {folder} — المرفقات فيه، وكل ملف تسويه يتحفظ فيه تلقائيًا (المسارات النسبية تبدأ منه). مجلد الشغل العام: {ws}.
-- الأوامر تشتغل في PowerShell. ffmpeg و ffprobe متوفرين للفيديو والصوت والصور.
+- الأوامر تشتغل في PowerShell. متوفر لك بدون تثبيت: ffmpeg و ffprobe و yt-dlp و python و node، وأوامر
+  hyperframes (فيديو موشن من HTML) و agent-browser (تحكم بالمتصفح) — حمّل مهارتها قبل ما تستخدمها.
 
 ## الصلاحيات
 - القراءة والبحث وأخذ لقطة شاشة وإنشاء ملفات جديدة في مجلد الشغل: تسويها مباشرة.
@@ -319,13 +324,13 @@ def build_context(conv, kind, budget):
 
 
 def attach_images(msgs, kind, run):
-    """Ollama: base64 images. DeepSeek: replace images with captions from the local vision model."""
+    """Local models: base64 images. DeepSeek: replace images with captions from the local vision model."""
     for m in msgs:
         imgs = [p for p in (m.get("images") or []) if Path(p).exists()]
         m.pop("images", None)
         if not imgs:
             continue
-        if kind == "ollama":
+        if kind == "local":
             m["images_b64"] = [run.b64(p) for p in imgs]
         else:
             m["content"] = (m.get("content") or "") + "\n\n" + run.caption(imgs)
@@ -389,20 +394,22 @@ class Run:
         k = "|".join(paths)
         if k in caps:
             return caps[k]
-        if not llm.ollama_ok():
-            return "[صورة مرفقة — ما قدرت أوصفها لأن Ollama مو شغال]"
-        loaded = [m for m in llm.ollama_loaded() if m in {llm.norm_tag(x) for x in local_models()}]
-        model = loaded[0] if loaded else model_of("executor", S)
-        if not loaded:
-            err = ensure_local("executor", self.progress)
+        cur_model, _ = localai.current()
+        model = cur_model if cur_model in local_models() else None
+        if not model:
+            err = ensure_local("executor", self.progress, self.cancel)
             if err:
                 return f"[صورة مرفقة — ما قدرت أوصفها: {err}]"
-        self.progress("أخلي Qwen يوصف الصورة للمخطط...")
+            model = model_of("executor", S)
+        self.progress("أخلي النموذج المحلي يوصف الصورة للمخطط...")
         q = None
         if len(paths) > 1:
             q = (f"These are {len(paths)} images in order (e.g. video frames or screenshots). Describe each one briefly "
                  "(numbered), then summarize what happens overall. Transcribe any visible text exactly.")
-        text = llm.ollama_caption(model, [self.b64(p) for p in paths], S["num_ctx"], q)
+        try:
+            text = localai.caption(model, [self.b64(p) for p in paths], q)
+        except Exception as e:
+            return f"[صورة مرفقة — ما قدرت أوصفها: {llm.describe_error(e)}]"     # not cached: retried next time
         caps[k] = f"[وصف الصورة (من نموذج الرؤية المحلي)]:\n{text}"
         return caps[k]
 
@@ -450,7 +457,7 @@ class Run:
         with VRAM_LOCK:
             unload_all()
             for k, a in AGENTS.items():
-                if a["kind"] == "ollama":
+                if a["kind"] == "local":
                     STATUS[k] = "off"
             try:
                 freevideo.ensure_running(self.progress, self.cancel)
@@ -465,8 +472,65 @@ class Run:
                 raise RuntimeError(str(e)) from None
             finally:
                 freevideo.free_vram()
-                if self.kind == "ollama":
-                    ensure_local(self.key, self.progress)
+                if self.kind == "local":
+                    ensure_local(self.key, self.progress, self.cancel)
+
+
+# ============================ Saudi dialect ============================
+# Words that are clearly Egyptian (not used in Saudi speech). Two different ones in a reply = rewrite it.
+_EGY = re.compile(r"(?<![\u0600-\u06FF])(عايز|عايزة|عاوز|عاوزة|إزاي|ازاي|دلوقتي|دلوقت|كده|كدا|بتاعك|بتاعي|بتاعه|بتاعها|"
+                  r"بتاعة|بتاعت|بتاع|أوي|اوي|مش|النهارده|النهاردة|امبارح|إمبارح|هعمل|هتعمل|بيعمل|علشان كده|يا باشا)"
+                  r"(?![\u0600-\u06FF])")
+DIALECT_NOTE = "\n\n(رد باللهجة السعودية.)"
+
+
+def egyptian_score(text):
+    """(distinct markers, total markers) outside code blocks."""
+    plain = re.sub(r"```.*?```|`[^`\n]*`", " ", text or "", flags=re.S)
+    found = _EGY.findall(plain)
+    return len(set(found)), len(found)
+
+
+def needs_dialect_fix(text):
+    distinct, total = egyptian_score(text)
+    return distinct >= 2 or total >= 3
+
+
+def remind_dialect(msgs):
+    """Append a short reminder to the newest user message (request copy only, never stored)."""
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            if isinstance(m.get("content"), str) and not m["content"].endswith(DIALECT_NOTE):
+                m["content"] += DIALECT_NOTE
+            return msgs
+    return msgs
+
+
+def _fix_dialect(run, am, key, kind):
+    """Rewrite a reply that slipped into Egyptian dialect, keeping its meaning, code and paths."""
+    text = am.get("content") or ""
+    if not needs_dialect_fix(text):
+        return
+    _phase(run, "يعدّل اللهجة للسعودي")
+    msgs = [{"role": "system", "content": "أنت محرر لغوي. أعد كتابة النص اللي يجيك باللهجة السعودية البيضاء "
+                                          "(وش، ليش، أبي، الحين، كذا، مو، زين، مرة، عشان)، بنفس المعنى والترتيب والتنسيق "
+                                          "(Markdown). لا تغيّر الكود ولا المسارات ولا الأرقام ولا الروابط ولا الأسماء "
+                                          "الإنجليزية. رجّع النص الجديد بس، بدون أي مقدمة."},
+            {"role": "user", "content": text}]
+    if kind == "deepseek":
+        gen = llm.stream_deepseek(S["deepseek_key"], S["deepseek_model"], "low", msgs, None, run.cancel)
+    else:
+        gen = llm.stream_local(model_of(key, S), msgs, None, run.cancel, False)
+    out = ""
+    for t, v in gen:
+        if t == "text":
+            out += v
+        elif t == "error":
+            return
+    out = _strip_think_tags(out).strip()
+    if out and len(out) > len(text) * 0.5 and egyptian_score(out)[1] < egyptian_score(text)[1]:
+        am["content"] = out
+        run.emit("replace_text", text=out)
 
 
 def _strip_think_tags(text):
@@ -506,14 +570,19 @@ def run_agent(run: Run):
         if kind == "deepseek" and not S.get("deepseek_key"):
             run.notice("حط مفتاح DeepSeek من الإعدادات ⚙️ عشان يشتغل DeepSeek.")
             return
-        if kind == "ollama":
+        if kind == "local":
             _phase(run, "يجهّز النموذج في كرت الشاشة")
-            err = ensure_local(key, run.progress)
+            err = ensure_local(key, run.progress, run.cancel)
             if err:
                 run.notice(err)
                 return
         sysmsg = {"role": "system", "content": system_prompt(key, conv)}
-        budget = 500_000 if kind == "deepseek" else int(S["num_ctx"] * 2.3) - len(sysmsg["content"]) - 12000
+        n_ctx = localai.ctx_for(model_of(key, S), S.get("num_ctx")) if kind == "local" else 0
+        # chars the chat history may use: context (~2.3 chars/token for Arabic) minus the system prompt, the tool
+        # definitions (English JSON packs ~1.5x more chars per token) and room for the reply
+        schema_chars = int(len(json.dumps(schemas, ensure_ascii=False)) / 1.5)
+        budget = (500_000 if kind == "deepseek" else
+                  int(n_ctx * 2.3) - len(sysmsg["content"]) - schema_chars - 6000)
         budget = max(budget, 12_000)
         max_steps = int(S.get("max_steps") or 40)
         fails, repeats, last_sig, stop_tools = {}, 0, None, False
@@ -525,19 +594,19 @@ def run_agent(run: Run):
                 break
             final_step = step == max_steps
             _phase(run, "يجهّز الطلب" if step == 0 else f"يكمّل — الخطوة {step + 1}")
-            msgs = [sysmsg] + attach_images(build_context(conv, kind, budget), kind, run)
+            msgs = remind_dialect([sysmsg] + attach_images(build_context(conv, kind, budget), kind, run))
             use_tools = None if (stop_tools or final_step) else schemas
             if final_step:
                 msgs.append({"role": "user", "content": "(النظام: وصلت حد الخطوات. وقف الأدوات واكتب ملخص وش خلصت ووش باقي.)"})
             am = {"role": "assistant", "content": "", "reasoning": "", "agent": key}
             conv["messages"].append(am)
             run.emit("assistant", agent=key)
-            _phase(run, "النموذج يقرأ المحادثة ويفكر" if kind == "ollama" else "DeepSeek يفكر")
+            _phase(run, "النموذج يقرأ المحادثة ويفكر" if kind == "local" else "DeepSeek يفكر")
             if kind == "deepseek":
                 gen = llm.stream_deepseek(S["deepseek_key"], S["deepseek_model"], S.get("deepseek_effort", "high"),
                                           msgs, use_tools, run.cancel)
             else:
-                gen = llm.stream_ollama(model_of(key, S), msgs, use_tools, run.cancel, run.think, S["num_ctx"])
+                gen = llm.stream_local(model_of(key, S), msgs, use_tools, run.cancel, run.think)
             calls, err = [], None
             last_save, said_think, said_text = time.time(), False, False
             for t, v in gen:
@@ -569,9 +638,25 @@ def run_agent(run: Run):
             if cleaned != am["content"]:
                 am["content"] = cleaned
                 run.emit("replace_text", text=cleaned)
+            if (kind == "local" and not run.cancel.is_set() and localai.current()[1] not in (None, "fast")
+                    and localai.looks_broken(am["content"] + am["reasoning"])):
+                # known llama.cpp CUDA issue when experts sit in RAM: switch to the in-VRAM variant and redo the step
+                localai.BROKEN.add(localai.current())
+                if conv["messages"] and conv["messages"][-1] is am:
+                    conv["messages"].pop()
+                    run.emit("drop_assistant")
+                run.notice("النسخة الأعلى جودة طلّعت كلام مكرر (مشكلة معروفة لما جزء من النموذج يكون بالرام). "
+                           "رجعت للنسخة السريعة وأعيد المحاولة.", "info")
+                err = ensure_local(key, run.progress, run.cancel)
+                if err:
+                    run.notice(err)
+                    return
+                continue
             if calls:
                 am["tool_calls"] = calls
                 run.emit("tool_calls", calls=calls)
+            elif am["content"].strip() and not err and not run.cancel.is_set():
+                _fix_dialect(run, am, key, kind)
             empty = not am["content"].strip() and not calls
             if not am["content"] and not am["reasoning"] and not calls:
                 if conv["messages"] and conv["messages"][-1] is am:
@@ -580,7 +665,7 @@ def run_agent(run: Run):
             store.save(conv)
             if err:
                 low = err.lower()
-                if (kind == "ollama" and bad_calls < 2 and not run.cancel.is_set()
+                if (kind == "local" and bad_calls < 2 and not run.cancel.is_set()
                         and any(k in low for k in ("xml syntax", "parsing tool call", "tool call", "unexpected end",
                                                    "invalid character", "unmarshal"))):
                     bad_calls += 1            # the model wrote a broken tool call: tell it and try again
@@ -682,7 +767,7 @@ def run_agent(run: Run):
                                                     "وش نجح ووش ما نجح، ووين الملفات.)"})
             gen = (llm.stream_deepseek(S["deepseek_key"], S["deepseek_model"], "low", msgs, None, run.cancel)
                    if kind == "deepseek" else
-                   llm.stream_ollama(model_of(key, S), msgs, None, run.cancel, False, S["num_ctx"]))
+                   llm.stream_local(model_of(key, S), msgs, None, run.cancel, False))
             for t, v in gen:
                 if t == "text":
                     am["content"] += v
@@ -690,9 +775,13 @@ def run_agent(run: Run):
                 elif t == "think":
                     am["reasoning"] += v
                     run.emit("think", text=v)
+            am["content"] = _strip_think_tags(am["content"])
             if not am["content"].strip():
                 am["content"] = "خلصت الخطوات اللي فوق. افتح «خطوات العمل» تشوف نتيجة كل خطوة."
                 run.emit("text", text=am["content"])
+            else:
+                run.emit("replace_text", text=am["content"])
+                _fix_dialect(run, am, key, kind)
     except Exception as e:
         LOG.exception("agent error")
         run.notice(f"خطأ داخلي: {type(e).__name__}: {e}")

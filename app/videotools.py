@@ -22,6 +22,7 @@ IMAGE_OPS = ["resize", "crop", "rotate", "flip", "convert", "compress", "graysca
              "brightness", "denoise"]
 
 _caps = {}
+_CANCEL = {"ev": None}        # the running task's stop button (set by video()); ffmpeg is killed when pressed
 
 
 def _ffmpeg_has(kind, name):
@@ -104,7 +105,8 @@ def run_ffmpeg(args, duration, progress, label, cwd=None, timeout=4 * 3600):
                     progress(f"{label} — {pct}%" + (f" · باقي ~{eta} ث" if eta else "") + f"|{pct}")
                 else:
                     progress(f"{label} — {cur:.0f} ث معالجة · {el} ث")
-        if time.time() - t0 > timeout:
+        ev = _CANCEL["ev"]
+        if time.time() - t0 > timeout or (ev is not None and ev.is_set()):
             p.kill()
             break
     p.wait()
@@ -178,7 +180,15 @@ def repair_chain(presets, info):
 
 
 def video(args, src, out_dir, progress, cancel, realesrgan_exe=None):
-    """Returns (output_paths, message)."""
+    """Returns (output_paths, message). The stop button kills a running ffmpeg."""
+    _CANCEL["ev"] = cancel
+    try:
+        return _video(args, src, out_dir, progress, cancel, realesrgan_exe)
+    finally:
+        _CANCEL["ev"] = None
+
+
+def _video(args, src, out_dir, progress, cancel, realesrgan_exe=None):
     op = (args.get("operation") or "").strip().lower()
     if op not in VIDEO_OPS:
         raise ValueError(f"العملية غير معروفة. المتاح: {', '.join(VIDEO_OPS)}")
@@ -392,7 +402,7 @@ def video(args, src, out_dir, progress, cancel, realesrgan_exe=None):
 
 def _upscale_ai(args, src, info, out_dir, progress, cancel, exe):
     if not exe:
-        raise RuntimeError("Real-ESRGAN مو مثبت. شغّل install-extras.bat")
+        raise RuntimeError("Real-ESRGAN مو مثبت. أعد تثبيت البرنامج من ملف الـ Setup")
     scale = 4 if int(args.get("scale") or 2) >= 4 else 2
     anime = str(args.get("anime", "false")).lower() in ("true", "1", "yes")
     model = f"realesr-animevideov3-x{scale}" if anime else "realesrgan-x4plus"

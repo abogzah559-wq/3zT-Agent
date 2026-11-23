@@ -1,4 +1,4 @@
-"""Runs inside the optional extras venv (Python 3.12). Prints one JSON line with the result.
+"""Runs inside the bundled Python 3.12 (or the v1 extras venv). Prints one JSON line with the result.
 
   transcribe <media> <out_dir> [language|auto] [model]
   rmbg <image> <out_png>
@@ -14,6 +14,9 @@ import time
 
 def _cuda_dlls():
     """Expose pip-installed CUDA libraries (nvidia-cublas / nvidia-cudnn) to ctranslate2 on Windows."""
+    extra = os.environ.get("AGENT_GPU_LIBS")       # optional download from the app's setup screen
+    if extra and os.path.isdir(extra) and extra not in sys.path:
+        sys.path.insert(0, extra)                  # the embedded Python ignores PYTHONPATH
     if sys.platform != "win32":
         return
     for base in sys.path:
