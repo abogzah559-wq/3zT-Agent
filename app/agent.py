@@ -260,7 +260,7 @@ def system_prompt(key, conv=None):
     tail = f"""
 
 ## هالمحادثة
-- تاريخ اليوم: {today} (الساعة بالضبط تجيك مع كل رسالة).
+- تاريخ اليوم: {today}. لو احتجت الساعة بالضبط، شيّك عليها بأمر.
 - مجلد هالمحادثة: {folder} — المرفقات فيه، وكل ملف تسويه يتحفظ فيه تلقائيًا (المسارات النسبية تبدأ منه)."""
     if AGENTS[key]["role"] == "planner":
         return base + tail + """
@@ -530,17 +530,31 @@ def remind_dialect(msgs):
     """Append a short reminder to the newest user message (request copy only, never stored)."""
     for m in reversed(msgs):
         if m.get("role") == "user":
-            note = DIALECT_NOTE[:-1] + " الساعة الحين " + time.strftime("%H:%M") + ".)"
-            if isinstance(m.get("content"), str) and DIALECT_NOTE.strip()[:-2] not in m["content"][-60:]:
-                m["content"] += note
+            if isinstance(m.get("content"), str) and not m["content"].endswith(DIALECT_NOTE):
+                m["content"] += DIALECT_NOTE
             return msgs
     return msgs
+
+
+_SWAP = {"كده": "كذا", "كدا": "كذا", "دلوقتي": "الحين", "دلوقت": "الحين", "إزاي": "كيف", "ازاي": "كيف",
+         "النهارده": "اليوم", "النهاردة": "اليوم", "برضه": "بعد", "امبارح": "أمس", "إمبارح": "أمس"}
+_SWAP_RE = re.compile(r"(?<![" + _AR_LETTER + r"])([وف]?)(" + "|".join(_SWAP) + r")(?![" + _AR_LETTER + r"])")
+
+
+def _swap_words(text):
+    """One or two stray words don't need a whole rewrite: swap the unambiguous ones (never inside code)."""
+    parts = re.split(r"(```.*?```|`[^`\n]*`)", text, flags=re.S)
+    return "".join(p if i % 2 else _SWAP_RE.sub(lambda m: m.group(1) + _SWAP[m.group(2)], p) for i, p in enumerate(parts))
 
 
 def _fix_dialect(run, am, key, kind):
     """Rewrite a reply that slipped into Egyptian dialect, keeping its meaning, code and paths."""
     text = am.get("content") or ""
     if not needs_dialect_fix(text):
+        swapped = _swap_words(text)
+        if swapped != text:
+            am["content"] = swapped
+            run.emit("replace_text", text=swapped)
         return
     _phase(run, "يعدّل اللهجة للسعودي")
     msgs = [{"role": "system", "content": "أنت محرر لغوي. أعد كتابة النص اللي يجيك باللهجة السعودية البيضاء "

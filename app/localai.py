@@ -468,6 +468,7 @@ def load(model, variant, wanted_ctx, progress=None, cancel=None):
         if current() == (model, variant) and healthy():
             return ""
         stop()
+        _free_port()        # so the health check below can only be answered by the server we start now
         ctx = ctx_for(model, wanted_ctx)
         args = _args(exe, model, variant, ctx, files)
         LOCAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -502,28 +503,45 @@ def load(model, variant, wanted_ctx, progress=None, cancel=None):
         return "النموذج أخذ وقت طويل وما اشتغل. شوف ملف llama-server.log في مجلد البيانات المحلي."
 
 
-def kill_stale():
-    """A llama-server left behind by an earlier run (crash / restart) still holds the port, VRAM and RAM.
-    Only the process listening on OUR port is touched."""
-    if alive() or not healthy():
-        return
+def _port_pids():
+    """PIDs listening on our llama port. Windows lets several processes bind the same port
+    (SO_REUSEADDR), so an old llama-server can keep answering there after a restart."""
+    if not IS_WIN:
+        return set()
     try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+                             creationflags=NO_WINDOW, timeout=15).stdout
+    except Exception:
+        return set()
+    me = str(os.getpid())
+    return {ln.split()[-1] for ln in out.splitlines()
+            if f":{LLAMA_PORT} " in ln and "LISTENING" in ln and ln.split()[-1].isdigit() and ln.split()[-1] != me}
+
+
+def _free_port():
+    """Kill every process on our port (leftovers of crashes or restarts) before starting a new server."""
+    try:
+        pids = _port_pids()
         if IS_WIN:
-            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
-                                 creationflags=NO_WINDOW, timeout=15).stdout
-            pids = {ln.split()[-1] for ln in out.splitlines()
-                    if f":{LLAMA_PORT} " in ln and "LISTENING" in ln and ln.split()[-1].isdigit()}
             for pid in pids:
                 subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True,
                                creationflags=NO_WINDOW, timeout=20)
-        else:
+        elif healthy():
             subprocess.run(["pkill", "-f", f"llama-server.*--port {LLAMA_PORT}"], capture_output=True, timeout=15)
         for _ in range(20):
-            if not healthy():
+            if not healthy() and not (IS_WIN and _port_pids()):
                 break
             time.sleep(0.5)
+        if pids:
+            LOG.info("freed llama port from %s", ",".join(sorted(pids)))
     except Exception:
-        pass
+        LOG.exception("free port")
+
+
+def kill_stale():
+    """At startup: nothing of ours runs yet, so anything on the port is a leftover."""
+    if not alive():
+        _free_port()
 
 
 def kill_now():
@@ -538,6 +556,13 @@ def kill_now():
                 p.kill()
         except Exception:
             pass
+    if IS_WIN:
+        for pid in _port_pids():       # anything else still holding the port and the VRAM
+            try:
+                subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True,
+                               creationflags=NO_WINDOW, timeout=20)
+            except Exception:
+                pass
 
 
 # ============================ chat ============================
