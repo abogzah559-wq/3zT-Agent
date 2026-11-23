@@ -286,19 +286,23 @@ def install_server(progress=None, cancel=None):
     """Download the latest llama.cpp Windows build (CUDA 12 on NVIDIA, Vulkan otherwise)."""
     if not IS_WIN:
         raise LocalError("llama-server مو موجود. ثبّت llama.cpp وخله في PATH.")
-    rel = _get_json("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest", 30)
-    assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
-    want = []
-    if has_nvidia():
-        main = sorted((n for n in assets if re.match(r"llama-.*-bin-win-cuda-12[\d.]*-x64\.zip$", n)), reverse=True)
-        rt = sorted((n for n in assets if re.match(r"cudart-llama-bin-win-cuda-12[\d.]*-x64\.zip$", n)), reverse=True)
-        if main and rt:
-            want = [main[0], rt[0]]
+    want, assets = [], {}
+    # the newest release that carries Windows builds (the "latest" one can be a nightly marker)
+    for rel in _get_json("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15", 30):
+        assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+        if has_nvidia():
+            main = sorted((n for n in assets if re.match(r"llama-.*-bin-win-cuda-12[\d.]*-x64\.zip$", n)), reverse=True)
+            rt = sorted((n for n in assets if re.match(r"cudart-llama-bin-win-cuda-12[\d.]*-x64\.zip$", n)), reverse=True)
+            if main and rt:
+                want = [main[0], rt[0]]
+        if not want:
+            vk = [n for n in assets if re.match(r"llama-.*-bin-win-vulkan-x64\.zip$", n)]
+            if vk:
+                want = [vk[0]]
+        if want:
+            break
     if not want:
-        vk = [n for n in assets if re.match(r"llama-.*-bin-win-vulkan-x64\.zip$", n)]
-        if not vk:
-            raise LocalError("ما لقيت نسخة llama.cpp مناسبة للويندوز")
-        want = [vk[0]]
+        raise LocalError("ما لقيت نسخة llama.cpp مناسبة للويندوز")
     dest = LLAMA_DIRS[-1]
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)

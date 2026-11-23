@@ -60,13 +60,22 @@ if (-not (Test-Path "$pk\node_modules\.bin\agent-browser.cmd")) { throw "agent-b
 
 # ---- llama.cpp (CUDA 12 build + its CUDA runtime DLLs) ----
 New-Item -ItemType Directory -Force -Path "$Rt\llama" | Out-Null
-$rel = gh release view --repo ggml-org/llama.cpp --json assets | ConvertFrom-Json
-$names = $rel.assets.name
-$main = $names | Where-Object { $_ -match "^llama-.*-bin-win-cuda-12[\d.]*-x64\.zip$" } | Sort-Object -Descending | Select-Object -First 1
-$cudart = $names | Where-Object { $_ -match "^cudart-llama-bin-win-cuda-12[\d.]*-x64\.zip$" } | Sort-Object -Descending | Select-Object -First 1
-if (-not $main -or -not $cudart) { throw "llama.cpp CUDA assets not found: $($names -join ', ')" }
+# newest release that has the Windows CUDA 12 build (the "latest" one can be a nightly marker)
+$rels = gh api "repos/ggml-org/llama.cpp/releases?per_page=15" | ConvertFrom-Json
+$main = $null; $cudart = $null; $tag = $null
+foreach ($r in $rels) {
+  $names = $r.assets.name
+  $m = $names | Where-Object { $_ -match "^llama-.*-bin-win-cuda-12[\d.]*-x64\.zip$" } | Sort-Object -Descending | Select-Object -First 1
+  $c = $names | Where-Object { $_ -match "^cudart-llama-bin-win-cuda-12[\d.]*-x64\.zip$" } | Sort-Object -Descending | Select-Object -First 1
+  if ($m -and $c) { $main = $m; $cudart = $c; $tag = $r.tag_name; break }
+}
+if (-not $main) {
+  $rels | Select-Object -First 3 | ForEach-Object { Write-Host "$($_.tag_name): $($_.assets.name -join ', ')" }
+  throw "no llama.cpp release with Windows CUDA 12 assets"
+}
+Write-Host "llama.cpp $tag : $main + $cudart"
 foreach ($n in @($main, $cudart)) {
-  gh release download --repo ggml-org/llama.cpp --pattern $n --dir $Tmp --clobber
+  gh release download $tag --repo ggml-org/llama.cpp --pattern $n --dir $Tmp --clobber
   Expand-Archive -Force "$Tmp\$n" "$Rt\llama"
 }
 if (-not (Get-ChildItem "$Rt\llama" -Recurse -Filter "llama-server.exe")) { throw "llama-server.exe missing" }
