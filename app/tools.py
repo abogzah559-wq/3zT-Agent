@@ -35,7 +35,7 @@ SKIP_DIRS = {"node_modules", ".git", "__pycache__", "venv", ".venv", "site-packa
 EXEC_EXT = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".com", ".scr", ".lnk", ".reg", ".jar", ".py"}
 
 # ---------------- hard limits (always on, every agent) ----------------
-_AR = "؀-ۿ"
+_AR = "\u0621-\u064A\u066E-\u06D3\u06FA-\u06FF"     # Arabic letters only (، ؟ ؛ are punctuation)
 
 
 def _ar(words, prefixes="و|ف|ب|ل|ال|وال|بال|لل", suffixes="ة|ه|ها|هم|ين|ات|ون|يا"):
@@ -928,12 +928,14 @@ def system_info():
     lines = []
     s = stats.get()
     if s.get("ram_total"):
-        lines.append(f"الرام: {s['ram_used']} / {s['ram_total']} GB")
+        free = round(s["ram_total"] - s["ram_used"], 1)
+        lines.append(f"الرام: المستخدم {s['ram_used']} GB من {s['ram_total']} GB — الفاضي {free} GB")
     if s.get("cpu") is not None:
         lines.append(f"المعالج: {s['cpu']}%")
     g = s.get("gpu")
     if g:
-        lines.append(f"الكرت: {g['name']} — VRAM {g['vram_used']} / {g['vram_total']} GB، استخدام {g['util']}%، حرارة {g['temp']}°")
+        lines.append(f"الكرت: {g['name']} — ذاكرة الكرت: المستخدم {g['vram_used']} GB من {g['vram_total']} GB، "
+                     f"استخدام {g['util']}%، حرارة {g['temp']}°")
     if IS_WIN:
         for d in "CDEFGHIJ":
             root = f"{d}:\\"

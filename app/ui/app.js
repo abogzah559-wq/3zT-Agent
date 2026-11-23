@@ -1,6 +1,6 @@
 "use strict";
 /* 3zT Agent UI — no frameworks, no build step. */
-const UI_VERSION = "2.0.0";
+const UI_VERSION = "2.0.1";
 
 // ================= icons =================
 const ICONS = {
@@ -62,9 +62,10 @@ const store = {
   set(k, v) { try { localStorage.setItem("3zt." + k, JSON.stringify(v)); } catch (e) {} },
 };
 
+const PAGE_ID = Math.random().toString(36).slice(2, 12);    // lets the server tell open windows apart
 async function api(path, body) {
-  const opt = body === undefined ? {headers: {"X-3zT": "1"}} :
-    {method: "POST", headers: {"Content-Type": "application/json", "X-3zT": "1"}, body: JSON.stringify(body)};
+  const opt = body === undefined ? {headers: {"X-3zT": "1", "X-3zT-Page": PAGE_ID}} :
+    {method: "POST", headers: {"Content-Type": "application/json", "X-3zT": "1", "X-3zT-Page": PAGE_ID}, body: JSON.stringify(body)};
   const r = await fetch(path, opt);
   let data = {};
   try { data = await r.json(); } catch (e) {}
@@ -950,7 +951,7 @@ document.addEventListener("keydown", e => {
     else if (live && !live.done) stop();
   }
 });
-addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye", ""); } catch (e) {} });
+addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye?page=" + PAGE_ID, ""); } catch (e) {} });
 
 // ================= boot =================
 (async function boot() {

@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 
 APP_NAME = "3zT-Agent"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 PORT = int(os.environ.get("AGENT_PORT", "7272"))
 IS_WIN = sys.platform == "win32"
 NO_WINDOW = 0x08000000 if IS_WIN else 0

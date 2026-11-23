@@ -102,29 +102,41 @@ def _progress_hook(model, progress):
 def ensure_local(key, progress=None, cancel=None):
     """Make sure the agent's local model is the one running. Returns error text or ''."""
     model = model_of(key, S)
-    with VRAM_LOCK:
-        variant = variant_of(key)
-        if localai.current() == (model, variant) and localai.healthy():
-            STATUS[key] = "ready"
-            return ""
-        for k, a in AGENTS.items():
-            if a["kind"] == "local" and k != key:
-                STATUS[k] = "off"
-        missing = not localai.installed(model, variant)
-        STATUS[key] = "pulling" if missing else "loading"
-        try:
-            err = localai.load(model, variant, S.get("num_ctx"), _progress_hook(model, progress), cancel)
-        finally:
-            PULL.pop(model, None)
-        if err and variant != "fast":          # the bigger variant did not fit: fall back
-            if progress:
-                progress("النسخة الأعلى جودة ما ركبت، أشغّل النسخة السريعة...")
-            localai.BROKEN.add((model, variant))
-            err2 = localai.load(model, "fast", S.get("num_ctx"), _progress_hook(model, progress), cancel)
-            PULL.pop(model, None)
-            err = err2 or ""
-        STATUS[key] = "ready" if not err else ("missing" if not localai.installed(model, "fast") else "off")
-        return err
+    if not VRAM_LOCK.acquire(blocking=False):
+        if progress:      # another task is loading or downloading a model right now: say so instead of freezing
+            progress("ينتظر النموذج يخلص تحميل أو تشغيل... (تشوف التقدم في شريط فوق)")
+        while not VRAM_LOCK.acquire(timeout=0.5):
+            if cancel is not None and cancel.is_set():
+                return "انلغى."
+    try:
+        return _ensure_local(key, model, progress, cancel)
+    finally:
+        VRAM_LOCK.release()
+
+
+def _ensure_local(key, model, progress, cancel):
+    variant = variant_of(key)
+    if localai.current() == (model, variant) and localai.healthy():
+        STATUS[key] = "ready"
+        return ""
+    for k, a in AGENTS.items():
+        if a["kind"] == "local" and k != key:
+            STATUS[k] = "off"
+    missing = not localai.installed(model, variant)
+    STATUS[key] = "pulling" if missing else "loading"
+    try:
+        err = localai.load(model, variant, S.get("num_ctx"), _progress_hook(model, progress), cancel)
+    finally:
+        PULL.pop(model, None)
+    if err and variant != "fast":          # the bigger variant did not fit: fall back
+        if progress:
+            progress("النسخة الأعلى جودة ما ركبت، أشغّل النسخة السريعة...")
+        localai.BROKEN.add((model, variant))
+        err2 = localai.load(model, "fast", S.get("num_ctx"), _progress_hook(model, progress), cancel)
+        PULL.pop(model, None)
+        err = err2 or ""
+    STATUS[key] = "ready" if not err else ("missing" if not localai.installed(model, "fast") else "off")
+    return err
 
 
 def switch(key):
@@ -136,14 +148,19 @@ def switch(key):
         with VRAM_LOCK:
             if target["kind"] == "local":
                 ensure_local(key)
-            elif S.get("keep_executor_warm"):
-                ensure_local("executor")
+            elif S.get("keep_executor_warm") and _downloaded("executor"):
+                ensure_local("executor")        # never start a big download just to keep it warm
             else:
                 localai.stop()
             refresh_status()
 
     if not any(r.running() for r in RUNS.values()):
         threading.Thread(target=work, daemon=True).start()
+
+
+def _downloaded(key):
+    m = model_of(key, S)
+    return any(localai.installed(m, v) for v in localai.variants(m))
 
 
 def warmup():
@@ -396,7 +413,11 @@ class Run:
             return caps[k]
         cur_model, _ = localai.current()
         model = cur_model if cur_model in local_models() else None
+        if not model and not _downloaded("executor"):
+            return ("[صورة مرفقة — نموذج الرؤية المحلي (المنفذ) لسا ما نزل، فما أقدر أشوفها الحين. "
+                    "نزّله من الإعدادات ← الإعداد والتحميلات]")
         if not model:
+            self.progress("يشغّل نموذج الرؤية المحلي عشان يوصف الصورة...")
             err = ensure_local("executor", self.progress, self.cancel)
             if err:
                 return f"[صورة مرفقة — ما قدرت أوصفها: {err}]"
@@ -478,9 +499,12 @@ class Run:
 
 # ============================ Saudi dialect ============================
 # Words that are clearly Egyptian (not used in Saudi speech). Two different ones in a reply = rewrite it.
-_EGY = re.compile(r"(?<![\u0600-\u06FF])(عايز|عايزة|عاوز|عاوزة|إزاي|ازاي|دلوقتي|دلوقت|كده|كدا|بتاعك|بتاعي|بتاعه|بتاعها|"
-                  r"بتاعة|بتاعت|بتاع|أوي|اوي|مش|النهارده|النهاردة|امبارح|إمبارح|هعمل|هتعمل|بيعمل|علشان كده|يا باشا)"
-                  r"(?![\u0600-\u06FF])")
+_AR_LETTER = "\u0621-\u064A\u066E-\u06D3\u06FA-\u06FF"      # letters only: ، ؟ ؛ count as punctuation
+_EGY = re.compile(r"(?<![" + _AR_LETTER + r"])(عايز|عايزة|عاوز|عاوزة|إزاي|ازاي|دلوقتي|دلوقت|كده|كدا|بتاعك|بتاعي|بتاعه|بتاعها|"
+                  r"بتاعة|بتاعت|بتاع|أوي|اوي|مش|النهارده|النهاردة|امبارح|إمبارح|هعمل|هتعمل|بيعمل|علشان كده|يا باشا|ده|دى|"
+                  r"هيك|هلق|هلأ|كتير|منيح|بدي|بدك|شو|ليش لأ|بيأخذ|بياخد|بيضيف|بيشتغل|عايزين|برضه|خلاص كده|أعمل إيه|اعمل ايه|أعمل ايه|"
+                  r"إيه اللي|ايه اللي|زي كده)"
+                  r"(?![" + _AR_LETTER + r"])")
 DIALECT_NOTE = "\n\n(رد باللهجة السعودية.)"
 
 

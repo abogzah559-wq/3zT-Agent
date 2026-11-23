@@ -430,6 +430,11 @@ def _args(exe, model, variant, ctx, files):
         a += ["--flash-attn", "on"] if takes_value else ["--flash-attn"]
         if _supports(exe, "--cache-type-k"):
             a += ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+    # Windows keeps a memory-mapped model in RAM too (6 GB+ wasted when it sits in VRAM)
+    if _supports(exe, "--load-mode"):
+        a += ["--load-mode", "none"]   # newer builds: --no-mmap is deprecated and ignored with tensor overrides
+    elif _supports(exe, "--no-mmap"):
+        a.append("--no-mmap")
     if _supports(exe, "--reasoning-format"):
         a += ["--reasoning-format", "deepseek"]
     if _supports(exe, "--no-webui"):
@@ -495,6 +500,30 @@ def load(model, variant, wanted_ctx, progress=None, cancel=None):
             time.sleep(0.7)
         stop()
         return "النموذج أخذ وقت طويل وما اشتغل. شوف ملف llama-server.log في مجلد البيانات المحلي."
+
+
+def kill_stale():
+    """A llama-server left behind by an earlier run (crash / restart) still holds the port, VRAM and RAM.
+    Only the process listening on OUR port is touched."""
+    if alive() or not healthy():
+        return
+    try:
+        if IS_WIN:
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+                                 creationflags=NO_WINDOW, timeout=15).stdout
+            pids = {ln.split()[-1] for ln in out.splitlines()
+                    if f":{LLAMA_PORT} " in ln and "LISTENING" in ln and ln.split()[-1].isdigit()}
+            for pid in pids:
+                subprocess.run(["taskkill", "/PID", pid, "/T", "/F"], capture_output=True,
+                               creationflags=NO_WINDOW, timeout=20)
+        else:
+            subprocess.run(["pkill", "-f", f"llama-server.*--port {LLAMA_PORT}"], capture_output=True, timeout=15)
+        for _ in range(20):
+            if not healthy():
+                break
+            time.sleep(0.5)
+    except Exception:
+        pass
 
 
 def kill_now():

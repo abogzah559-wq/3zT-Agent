@@ -55,6 +55,7 @@ if freevideo.installed() and str(freevideo.CFG["home"]) != S["freevideo_home"]:
     save_settings(S)
 
 SEEN = {"last": 0.0, "bye": 0.0}
+PAGES = {}      # page id -> last request time (several windows/tabs can be open; one closing must not stop the app)
 
 
 def _code_stamp():
@@ -244,7 +245,8 @@ def window_closed():
     if p is not None and p.poll() is not None and now - WINDOW["started"] > 6:
         # the browser process we launched has exited: window closed
         return SEEN["last"] < now - 10
-    if SEEN["bye"] > SEEN["last"] and now - SEEN["bye"] > BYE_GRACE:
+    others = [t for t in PAGES.values() if now - t < IDLE_LIMIT]
+    if SEEN["bye"] > SEEN["last"] and now - SEEN["bye"] > BYE_GRACE and not others:
         return True
     return bool(SEEN["last"]) and now - SEEN["last"] > IDLE_LIMIT
 
@@ -319,6 +321,14 @@ class H(BaseHTTPRequestHandler):
             return False
         return not need_header or self.headers.get("X-3zT") == "1"
 
+    def _page(self):
+        pid = self.headers.get("X-3zT-Page")
+        if pid and len(pid) < 40:
+            PAGES[pid] = time.time()
+            if len(PAGES) > 50:                  # forget very old pages
+                for k in sorted(PAGES, key=PAGES.get)[:25]:
+                    PAGES.pop(k, None)
+
     # ---- GET ----
     def do_HEAD(self):
         self.do_GET()
@@ -330,6 +340,7 @@ class H(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(qs)
         if path.startswith("/api/"):
             SEEN["last"] = time.time()
+            self._page()
         try:
             if path in ("/", "/index.html"):
                 return self._static(UI_DIR / "index.html")
@@ -483,11 +494,14 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/api/bye":
             if self._trusted(need_header=False):
+                page = urllib.parse.parse_qs(self.path.partition("?")[2]).get("page", [""])[0]
+                PAGES.pop(page, None)
                 SEEN["bye"] = time.time()
             return self._send(204)
         if not self._trusted():
             return self._send(403, b"forbidden", "text/plain")
         SEEN["last"] = time.time()
+        self._page()
         try:
             if path == "/api/upload":
                 return self._upload()
@@ -601,6 +615,7 @@ class H(BaseHTTPRequestHandler):
                 # reload the code: a new server takes the port and the open window reconnects to it
                 if agent.active_run():
                     return self._json({"ok": False, "error": "فيه مهمة شغالة. وقفها أول."})
+                localai.kill_now()       # the new server starts its own llama-server
                 args = [sys.executable, str(APP_DIR / "server.py"), "--attach"]
                 subprocess.Popen(args, cwd=str(APP_DIR), creationflags=NO_WINDOW | 0x00000008 if IS_WIN else 0,
                                  close_fds=True)
@@ -832,6 +847,7 @@ def main():
         cleanup()
     except Exception:
         pass
+    localai.kill_stale()                       # before warmup, so it never talks to a leftover server
     threading.Thread(target=agent.warmup, daemon=True).start()
     if attach:
         SEEN["last"] = time.time()
