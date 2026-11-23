@@ -49,6 +49,7 @@ def find_home():
     local = Path(os.environ.get("LOCALAPPDATA", str(home)))
     names = ("FreeVideo-engine", "FreeVideo", "freevideo-engine")
     bases = [home / "Downloads", home / "Desktop", home / "Documents", home, local]
+    bases += [Path(f"{d}:\\AI") for d in "CDEFG"] if IS_WIN else []      # the usual place for AI tools
     bases += [Path(f"{d}:\\") for d in "CDEFG"] if IS_WIN else []
     for b in bases:
         for n in names:
